@@ -819,17 +819,29 @@ bool BaseChatMesh::getChannel(int idx, ChannelDetails &dest)
 
 bool BaseChatMesh::setChannel(int idx, const ChannelDetails &src)
 {
-	static uint8_t zeroes[] = { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 };
+	static const uint8_t zeroes16[16] = { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 };
+	static const uint8_t zeroes32[32] = { 0 };
 
 	if (idx >= 0 && idx < MAX_GROUP_CHANNELS) {
 		channels[idx] = src;
-		if (memcmp(&src.channel.secret[16], zeroes, 16) == 0) {
+		if (memcmp(&src.channel.secret[16], zeroes16, 16) == 0) {
 			mesh::Utils::sha256(channels[idx].channel.hash, sizeof(channels[idx].channel.hash),
 				src.channel.secret, 16);
 		} else {
 			mesh::Utils::sha256(channels[idx].channel.hash, sizeof(channels[idx].channel.hash),
 				src.channel.secret, 32);
 		}
+
+		/* Keep num_channels aligned to highest non-empty slot + 1.
+		 * Needed so startup logic can detect whether channels were loaded. */
+		int highest_used = -1;
+		for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {
+			if (channels[i].name[0] != '\0' ||
+			    memcmp(channels[i].channel.secret, zeroes32, sizeof(zeroes32)) != 0) {
+				highest_used = i;
+			}
+		}
+		num_channels = highest_used + 1;
 		return true;
 	}
 	return false;
