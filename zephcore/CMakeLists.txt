@@ -540,6 +540,12 @@ if(CONFIG_ZEPHCORE_UI_DISPLAY)
   )
 endif()
 
+if(CONFIG_ZEPHCORE_DISPLAY_MONO_TFT)
+  target_sources(app PRIVATE
+    helpers/ui/display_mono_tft.c
+  )
+endif()
+
 if(CONFIG_ZEPHCORE_UI_BUTTONS OR CONFIG_ZEPHCORE_UI_BUZZER OR CONFIG_ZEPHCORE_UI_DISPLAY)
   target_sources(app PRIVATE
     helpers/ui/ui_task.c

@@ -1,5 +1,5 @@
 /*
- * Heltec T114 — nRF52840 + SX1262
+ * Heltec T114 — nRF52840 + SX1262 + ST7789 1.14" 240×135 TFT + ATGM336H GPS
  * Copyright (c) 2026 ZephCore
  *
  * SPDX-License-Identifier: Apache-2.0
@@ -28,6 +28,7 @@
 		zephyr,code-partition = &code_partition;
 		zephyr,console = &cdc_acm_uart;
 		zephyr,shell-uart = &cdc_acm_uart;
+		zephyr,display = &mono_tft;
 	};
 
 	leds {
@@ -61,7 +62,7 @@
 	};
 
 	/* Input filter: user button multi-tap detection
-	 * 1 tap  (400ms wait) → KEY_1 = page next on OLED
+	 * 1 tap  (400ms wait) → KEY_1 = page next on TFT
 	 * 2 taps (400ms wait) → KEY_B = flood advert
 	 * 3 taps (400ms wait) → KEY_D = buzzer mute toggle
 	 * 4 taps (400ms wait) → KEY_C = GPS on/off
@@ -103,6 +104,82 @@
 		compatible = "regulator-fixed";
 		regulator-name = "vbat-enable";
 		enable-gpios = <&gpio0 6 GPIO_ACTIVE_HIGH>;
+	};
+
+	/*
+	 * TFT power rail — P0.03, active-LOW (PIN_TFT_VDD_CTL LOW = display on).
+	 * Owned by display.c: enabled before CFB init, never disabled.
+	 * Screenless builds (no_display.conf) never call display.c so this
+	 * pin stays HIGH and the panel VDD rail is never powered.
+	 */
+	tft_pwr_enable: tft-pwr-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "tft-pwr-enable";
+		enable-gpios = <&gpio0 3 GPIO_ACTIVE_LOW>;
+	};
+
+	/*
+	 * TFT backlight — P0.15, active-LOW (PIN_TFT_LEDA_CTL LOW = backlight on).
+	 * Named disp_pwr_enable so display.c auto-gates it with the display on/off.
+	 */
+	disp_pwr_enable: disp-pwr-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "disp-pwr-enable";
+		enable-gpios = <&gpio0 15 GPIO_ACTIVE_LOW>;
+	};
+
+	/*
+	 * Monochrome wrapper around the ST7789V.
+	 * Reports PIXEL_FORMAT_MONO01 to CFB → ~4 KB framebuffer instead of ~64 KB.
+	 * display.c picks this up via the zephyr,display chosen node.
+	 */
+	mono_tft: mono-tft {
+		compatible = "zephcore,mono-tft";
+		tft-dev = <&tft>;
+		width = <240>;
+		height = <135>;
+	};
+
+	/*
+	 * MIPI-DBI SPI bus for ST7789V.
+	 * DC=P0.12 (PIN_TFT_DC=12), RST=P0.02 (PIN_TFT_RST=2, active-LOW).
+	 * write-only: no MISO on display SPI.
+	 */
+	mipi_dbi {
+		compatible = "zephyr,mipi-dbi-spi";
+		spi-dev = <&spi3>;
+		dc-gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;
+		write-only;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		tft: st7789v@0 {
+			compatible = "sitronix,st7789v";
+			mipi-max-frequency = <20000000>;
+			reg = <0>;
+			width = <240>;
+			height = <135>;
+			x-offset = <40>;
+			y-offset = <53>;
+			/* MADCTL=0x60: MX|MV, RGB order (landscape, derived from MeshCore landscapeScreen()) */
+			mdac = <0x60>;
+			colmod = <0x55>;
+			vcom = <0x20>;
+			gctrl = <0x35>;
+			vrhs = <0x0b>;
+			vdvs = <0x20>;
+			gamma = <0x01>;
+			lcm = <0x2c>;
+			porch-param = [0c 0c 00 33 33];
+			cmd2en-param = [5a 69 02 01];
+			pwctrl1-param = [a4 a1];
+			pvgam-param = [70 2c 2e 15 10 09 48 33 53 0b 19 18 20 25];
+			nvgam-param = [70 2c 2e 15 10 09 48 33 53 0b 19 18 20 25];
+			ram-param = [00 f0];
+			rgb-param = [40 02 14];
+			mipi-mode = "MIPI_DBI_MODE_SPI_4WIRE";
+		};
 	};
 
 	zephyr,user {
@@ -187,6 +264,7 @@
 	};
 };
 
+/* SPI2 - SX1262 LoRa radio */
 &spi2 {
 	compatible = "nordic,nrf-spim";
 	status = "okay";
@@ -207,6 +285,16 @@
 		spi-max-frequency = <8000000>;
 		rx-boosted;
 	};
+};
+
+/* SPI3 - ST7789 1.14" 240×135 TFT display */
+&spi3 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	pinctrl-0 = <&spi3_default>;
+	pinctrl-1 = <&spi3_sleep>;
+	pinctrl-names = "default", "sleep";
+	cs-gpios = <&gpio0 11 GPIO_ACTIVE_LOW>;
 };
 
 /*
