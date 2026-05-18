@@ -2,6 +2,9 @@
 
 source "$(ZEPHYR_BASE)/Kconfig.zephyr"
 
+# DT-driven PSRAM auto-enable for ESP32 boards (see Kconfig.psram).
+rsource "Kconfig.psram"
+
 module = ZEPHCORE_MAIN
 module-str = zephcore_main
 source "$(ZEPHYR_BASE)/subsys/logging/Kconfig.template.log_config"

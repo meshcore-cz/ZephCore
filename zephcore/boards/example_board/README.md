@@ -248,6 +248,50 @@ should ONLY contain settings that can't be inferred from hardware:
     CONFIG_SPI                          Auto from ZEPHCORE_RADIO_LR1110
     CONFIG_NORDIC_QSPI_NOR             Auto from DT nordic,qspi-nor node
     CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE  Auto: ON for companion+SX1262, OFF for repeater/LR1110
+    CONFIG_ESP_SPIRAM                   Auto: ON when DT psram0 size > 0 (ESP32-S/C5)
+    CONFIG_ESP_SPIRAM_SIZE              Auto: read from DT psram0 size by upstream Kconfig
+
+  NOT auto-detected (must set in board.conf for ESP32-S3 R8 boards):
+    CONFIG_SPIRAM_MODE_OCT              R8 chips (8 MB OPI octal) need this set
+                                        to "y" in board.conf. R2 chips (2 MB QSPI
+                                        quad) need nothing — QUAD is the upstream
+                                        default. See "ESP32 PSRAM" section below.
+
+
+ESP32 PSRAM (auto-enable, per-board mode on S3 R8)
+--------------------------------------------------
+
+`CONFIG_ESP_SPIRAM=y` is enabled automatically from devicetree by
+[zephcore/Kconfig.psram](../../Kconfig.psram). As long as a board's DTS
+includes a Zephyr WROOM dtsi with an R-suffix (e.g. `esp32s3_wroom_n16r2.dtsi`,
+`esp32s3_wroom_n8r8.dtsi`), PSRAM lights up — no `board.conf` entry needed
+for the basics. Boards without PSRAM use a non-R-suffix dtsi (e.g.
+`esp32s3_wroom_n8`), which leaves `psram0` at size = 0, so PSRAM stays off.
+ESP32-C3/C6 are outside Espressif's PSRAM Kconfig gate entirely — no effect.
+
+**Mode selection is silicon-strapped, but not auto-pickable here:** upstream
+Kconfig.spiram sets an unconditional `default SPIRAM_MODE_QUAD` on the choice,
+which wins over any conditional override we'd add downstream. So:
+
+| Chip suffix | PSRAM size | Mode      | board.conf needs           |
+|-------------|-----------|-----------|----------------------------|
+| `R2`        | 2 MB      | QSPI quad | nothing — upstream default |
+| `R8`        | 8 MB      | OPI octal | `CONFIG_SPIRAM_MODE_OCT=y` |
+
+If you add a new ESP32-S3 **R8** board (e.g. `esp32s3_wroom_n*r8.dtsi`),
+add a one-liner to its board.conf:
+
+```kconfig
+# PSRAM mode — ESP32-S3R8 is silicon-strapped OPI octal.
+# Enable is auto-detected from DTS by Kconfig.psram; only the mode is set here.
+CONFIG_SPIRAM_MODE_OCT=y
+```
+
+For aggressive DRAM relief beyond the heap rebalance, additional Kconfigs
+`CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y` and `CONFIG_SPIRAM_RODATA=y` move
+text/rodata into PSRAM at boot, but introduce PSRAM-cache-miss timing
+variability — only enable per-board after verifying radio and BLE paths
+still meet their timing budgets.
 
 
 Config Inheritance
