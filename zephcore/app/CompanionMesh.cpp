@@ -1899,6 +1899,8 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			memcpy(prefs.node_name, &data[1], nlen);
 			prefs.node_name[nlen] = '\0';
 			_store->savePrefs(prefs);
+			/* Push the new name to BLE so scanners see it without a reboot. */
+			zephcore_ble_update_name(prefs.node_name);
 		}
 		sendPacketOk();
 		return true;

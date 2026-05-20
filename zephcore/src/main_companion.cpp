@@ -303,6 +303,15 @@ static void mesh_event_loop(void)
 				companion_mesh_ptr->maintenanceLoop();
 			}
 
+			/* BLE advertising watchdog — if bt_le_adv_start failed
+			 * transiently (HCI timeout, controller pacing) the device
+			 * would silently stop advertising and be undiscoverable
+			 * until next reboot.  Cheap to nudge it back here. */
+			if (!zephcore_ble_is_connected() && !zephcore_ble_is_advertising()) {
+				LOG_WRN("BLE adv watchdog: not advertising, re-enabling");
+				zephcore_ble_set_enabled(true);
+			}
+
 			mesh_housekeeping_ui_refresh();
 		}
 #endif

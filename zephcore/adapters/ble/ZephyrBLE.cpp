@@ -134,6 +134,19 @@ static bool fast_adv_active;
  * Cleared by recycled() itself (both run on the cooperative system work queue). */
 static bool adv_stop_for_interval_change;
 
+/* Ground truth for "controller is currently broadcasting adv PDUs":
+ *   set TRUE  : bt_le_adv_start() returned success
+ *   set FALSE : bt_le_adv_stop() called explicitly  (set_enabled(false),
+ *               adv_slow_work interval change, update_name restart)
+ *   set FALSE : a phone connected — Zephyr stops adv internally to consume
+ *               the BT_MAX_CONN=1 slot (no slot left to advertise from).
+ *               Re-set TRUE later when recycled() → start_adv() runs.
+ * Exposed via zephcore_ble_is_advertising() for the companion advertising
+ * watchdog (main_companion.cpp housekeeping) that catches transient
+ * bt_le_adv_start failures.  Arduino nrf52 has an equivalent 10s watchdog
+ * (SerialBLEInterface.cpp:343). */
+static bool adv_running;
+
 
 /* Runtime BLE passkey */
 static uint32_t ble_passkey = CONFIG_ZEPHCORE_BLE_PASSKEY;
@@ -282,6 +295,12 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	}
 	LOG_INF("connected: %s", addr);
 	current_conn = bt_conn_ref(conn);
+
+	/* Zephyr stops advertising internally when the conn slot is consumed
+	 * (BT_MAX_CONN=1 — there's no slot left to advertise from).  Sync our
+	 * adv_running flag so zephcore_ble_is_advertising() reflects ground
+	 * truth, not just "we last called bt_le_adv_start()". */
+	adv_running = false;
 
 	/* Cancel fast→slow transition — already connected, no need to switch */
 	k_work_cancel_delayable(&adv_slow_work);
@@ -755,6 +774,7 @@ static void adv_slow_work_fn(struct k_work *work)
 	fast_adv_active = false;
 	adv_stop_for_interval_change = true;  /* suppress recycled() restart */
 	bt_le_adv_stop();
+	adv_running = false;
 	start_adv();
 	/* adv_stop_for_interval_change cleared by recycled() on the work queue */
 }
@@ -773,9 +793,11 @@ static void start_adv(void)
 	int err = bt_le_adv_start(&adv_param, ad, ad_len, sd, sd_len);
 	if (err && err != -EALREADY) {
 		LOG_ERR("adv start failed: %d", err);
+		adv_running = false;
 	} else {
 		LOG_INF("BLE advertising: %s",
 			fast_adv_active ? "20ms fast (60s)" : "211ms slow");
+		adv_running = true;
 	}
 }
 
@@ -894,6 +916,7 @@ void zephcore_ble_set_enabled(bool enable)
 		}
 		/* Stop advertising */
 		bt_le_adv_stop();
+		adv_running = false;
 		LOG_INF("BLE disabled");
 	} else {
 		/* Re-enable advertising — start fast window */
@@ -917,6 +940,11 @@ bool zephcore_ble_is_connected(void)
 bool zephcore_ble_is_congested(void)
 {
 	return ble_tx_congested;
+}
+
+bool zephcore_ble_is_advertising(void)
+{
+	return adv_running;
 }
 
 void zephcore_ble_set_passkey(uint32_t passkey)
@@ -964,6 +992,26 @@ void zephcore_ble_disconnect(void)
 	if (current_conn) {
 		bt_conn_disconnect(current_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
 	}
+}
+
+void zephcore_ble_update_name(const char *new_name)
+{
+	build_device_name_and_adv(new_name);
+
+	/* If currently advertising (not connected), restart so the new name
+	 * is published immediately.  Restart at fast interval so anyone
+	 * scanning sees the new name quickly. */
+	if (!current_conn) {
+		LOG_INF("name updated, restarting adv");
+		adv_stop_for_interval_change = true;  /* suppress recycled() restart */
+		bt_le_adv_stop();
+		adv_running = false;
+		fast_adv_active = true;
+		k_work_reschedule(&adv_slow_work, K_MSEC(BT_ADV_FAST_DURATION_MS));
+		start_adv();
+	}
+	/* If connected: GATT device name (via bt_set_name in build_device_name_and_adv)
+	 * is live now; advertising payload updates on next adv cycle after disconnect. */
 }
 
 void zephcore_ble_conn_params_ready(void)

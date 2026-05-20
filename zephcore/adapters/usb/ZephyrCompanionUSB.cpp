@@ -123,8 +123,12 @@ static void usb_rx_work_fn(struct k_work *work)
 
 				LOG_DBG("usb_rx: frame complete len=%u hdr=0x%02x", payload_len, payload[0]);
 
-				/* Check for CMD_APP_START to switch interface */
-				if (payload_len >= 1 && payload[0] == 0x03 /* CMD_APP_START */) {
+				/* Check for CMD_APP_START to switch interface.
+				 * CMD_APP_START is 0x01 — see CompanionMesh.cpp:26.
+				 * (Previously hardcoded 0x03 with the same comment, which
+				 * is actually CMD_SEND_CHANNEL_TXT_MSG and meant the USB
+				 * handshake silently dropped the app's first frame.) */
+				if (payload_len >= 1 && payload[0] == 0x01 /* CMD_APP_START */) {
 					if (zephcore_ble_get_active_iface() == ZEPHCORE_IFACE_BLE &&
 					    zephcore_ble_is_connected()) {
 						LOG_INF("usb_rx: CMD_APP_START, disconnecting BLE");

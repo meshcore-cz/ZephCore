@@ -52,6 +52,13 @@ bool zephcore_ble_is_connected(void);
 /** True if TX queue is full and overflow retry is active. */
 bool zephcore_ble_is_congested(void);
 
+/** True if the controller is currently broadcasting advertising PDUs.
+ *  Returns FALSE during an active connection (Zephyr stops adv when the
+ *  BT_MAX_CONN=1 slot is consumed) and FALSE after any explicit stop.
+ *  Companion main loop polls this each housekeeping tick (~5s) and calls
+ *  zephcore_ble_set_enabled(true) if adv ever stops outside a connection. */
+bool zephcore_ble_is_advertising(void);
+
 void zephcore_ble_set_passkey(uint32_t passkey);
 uint32_t zephcore_ble_get_passkey(void);
 
@@ -79,6 +86,16 @@ void zephcore_ble_disconnect(void);
  * during the sync burst.
  */
 void zephcore_ble_conn_params_ready(void);
+
+/**
+ * Rebuild advertising payload + GATT device name from a new prefs name.
+ * If currently advertising (no active connection), stops and restarts
+ * adv so the new name is published immediately. If connected, the new
+ * payload takes effect on the next adv cycle after disconnect.
+ *
+ * Call from CMD_SET_ADVERT_NAME handler after persisting prefs.
+ */
+void zephcore_ble_update_name(const char *new_name);
 
 #ifdef __cplusplus
 }
