@@ -335,14 +335,16 @@ endif()
 
 # Auto-pair: for each .conf in EXTRA_CONF_FILE, if a same-named .overlay exists
 # next to it, include it automatically (e.g. no_display.conf → no_display.overlay).
+# Relative paths are resolved against CMAKE_CURRENT_SOURCE_DIR (the app source dir).
 if(EXTRA_CONF_FILE)
     foreach(_conf IN LISTS EXTRA_CONF_FILE)
-        string(REPLACE ".conf" ".overlay" _paired_overlay "${_conf}")
-        if(EXISTS "${_paired_overlay}")
+        get_filename_component(_abs_conf "${_conf}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        string(REPLACE ".conf" ".overlay" _abs_overlay "${_abs_conf}")
+        if(EXISTS "${_abs_overlay}")
             if(EXTRA_DTC_OVERLAY_FILE)
-                set(EXTRA_DTC_OVERLAY_FILE "${EXTRA_DTC_OVERLAY_FILE};${_paired_overlay}" CACHE STRING "" FORCE)
+                set(EXTRA_DTC_OVERLAY_FILE "${EXTRA_DTC_OVERLAY_FILE};${_abs_overlay}" CACHE STRING "" FORCE)
             else()
-                set(EXTRA_DTC_OVERLAY_FILE "${_paired_overlay}" CACHE STRING "" FORCE)
+                set(EXTRA_DTC_OVERLAY_FILE "${_abs_overlay}" CACHE STRING "" FORCE)
             endif()
         endif()
     endforeach()

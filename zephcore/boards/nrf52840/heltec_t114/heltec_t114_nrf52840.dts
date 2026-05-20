@@ -45,7 +45,7 @@
 	};
 
 	/* Input filter: user button long-press detection (1000ms) */
-	user_btn_longpress {
+	user_btn_longpress: user_btn_longpress {
 		compatible = "zephyr,input-longpress";
 		input = <&buttons>;
 		input-codes = <INPUT_KEY_0>;
