@@ -246,6 +246,43 @@ private:
 	uint8_t _pending_ping_pubkey[4];
 	uint32_t _pending_ping_sent_ms;
 
+	/* Outgoing DM tracking — retries on missing ACK, then forces flood as
+	 * a last-ditch attempt, then marks failed. The BLE-app mirror is
+	 * deferred until the outcome is known so the phone sees the message
+	 * exactly once with a delivery indicator in the body prefix. */
+	static const int MAX_PENDING_SENDS = 4;
+	static const uint8_t MAX_SEND_ATTEMPTS = 5;  /* attempt 4 (0-indexed) forces flood */
+	struct PendingSend {
+		JoystickUITask *task;        /* back-pointer for ISR dispatch */
+		bool active;
+		volatile bool retry_due;     /* set by timer ISR, consumed in loop() */
+		bool delivered;
+		bool failed;
+		uint8_t recipient_pubkey[PUB_KEY_SIZE];
+		char recipient_name[32];
+		uint32_t expected_ack;
+		uint32_t timestamp;
+		char text[MAX_TEXT_LEN + 1];
+		uint8_t attempt;
+		uint32_t timeout_ms;
+		struct k_timer retry_timer;
+	};
+	PendingSend _pending_sends[MAX_PENDING_SENDS];
+	static void pendingRetryTimerCb(struct k_timer *t);
+	int allocPendingSendSlot();
+	void schedulePendingRetry(int slot_idx);
+	void doPendingSend(int slot_idx);
+	void completePendingSend(int slot_idx);
+	void processPendingRetries();
+public:
+	/* Initiate a DM with retry tracking (called by sendComposedMessage). */
+	bool startPendingDM(ContactInfo &recipient, uint32_t ts, const char *text);
+	/* Try to match an arriving ACK to a pending send.
+	 * Returns the recipient ContactInfo* if matched (so BaseChatMesh can do
+	 * its return-path-retry housekeeping), nullptr otherwise. */
+	ContactInfo *tryMatchPendingAck(uint32_t ack);
+private:
+
 	/* Discover signal cache, owned here, populated via onRepeaterDiscoverResp */
 	static constexpr int DISCOVER_SIGNAL_TABLE_SIZE = 16;
 	struct DiscoverSignal {

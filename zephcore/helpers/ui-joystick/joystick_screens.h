@@ -465,6 +465,10 @@ public:
 	 *                       when a BLE phone is connected and will sync them). */
 	void addPreview(uint8_t path_len, const char *from_name, const char *msg,
 			bool initially_read = false);
+	/* Update the origin prefix of an existing sent-message entry to reflect
+	 * delivery outcome. Looks up by (timestamp, contact_name) — these are
+	 * unique-per-second for outgoing DMs. */
+	void markSentEntryStatus(uint32_t ts, const char *contact_name, bool delivered);
 	bool getStoredMessageForSourceAt(const char *source, uint32_t ts, const char *&out_msg) const;
 	bool getLatestStoredMessageForSource(const char *source, const char *&out_msg, uint32_t *out_ts = nullptr) const;
 	int getContactMsgCount(const char *contact_name) const;

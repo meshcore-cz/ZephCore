@@ -695,6 +695,18 @@ ContactInfo *CompanionMesh::processAck(const uint8_t *data)
 			return lookupContactByPubKey(ci.id.pub_key, PUB_KEY_SIZE);
 		}
 	}
+#if IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK)
+	/* Joystick UI tracks its own pending DMs; let it match before falling
+	 * through to connection-keep-alive ACKs. The joystick handles delivery
+	 * indicator + BLE-mirror queueing internally — we just need the matched
+	 * contact pointer for BaseChatMesh's return-path-retry hook. */
+	{
+		uint8_t recipient_pubkey[6];
+		if (ui_joystick_try_match_ack(ack_crc, recipient_pubkey)) {
+			return lookupContactByPubKey(recipient_pubkey, 6);
+		}
+	}
+#endif
 	return checkConnectionsAck(data);
 }
 
@@ -768,7 +780,7 @@ void CompanionMesh::queueContactMessage(const ContactInfo &contact, mesh::Packet
 }
 
 void CompanionMesh::queueLocalSentContactMessage(const ContactInfo &contact,
-	uint32_t timestamp, const char *text)
+	uint32_t timestamp, const char *text, bool delivered)
 {
 	if (!text) return;
 	uint8_t frame[MAX_FRAME_SIZE];
@@ -790,14 +802,15 @@ void CompanionMesh::queueLocalSentContactMessage(const ContactInfo &contact,
 	i += 4;
 
 	/* DM wire-text has no sender prefix (the sender is the pubkey field).
-	 * For local-sent mirrors the phone app would otherwise show them as a
-	 * message *from* the contact, indistinguishable from incoming. Prepend
-	 * a visible marker so the user can see at a glance which side sent it.
-	 * "(>>) " matches the joystick UI's own sent indicator in addPreview(). */
-	static const char kSentMarker[] = "(>>) ";
-	size_t marker_len = sizeof(kSentMarker) - 1;
+	 * For local-sent mirrors the phone app would otherwise show them as
+	 * messages *from* the contact, indistinguishable from incoming. Prepend
+	 * a visible delivery indicator so the user can tell at a glance both
+	 * which side sent it and whether it was acked. */
+	const char *marker = delivered ? "(>>\xe2\x9c\x93) "    /* (>>✓) UTF-8 */
+								   : "(>>\xe2\x9c\x97) ";   /* (>>✗) UTF-8 */
+	size_t marker_len = strlen(marker);
 	if (i + marker_len <= sizeof(frame)) {
-		memcpy(&frame[i], kSentMarker, marker_len);
+		memcpy(&frame[i], marker, marker_len);
 		i += marker_len;
 	}
 	size_t text_len = strlen(text);
@@ -807,7 +820,7 @@ void CompanionMesh::queueLocalSentContactMessage(const ContactInfo &contact,
 	memcpy(&frame[i], text, text_len);
 	i += text_len;
 
-	LOG_DBG("queueLocalSentContactMessage: frame_len=%d", i);
+	LOG_DBG("queueLocalSentContactMessage: frame_len=%d delivered=%d", i, (int)delivered);
 	queueOfflineMessage(frame, i);
 	sendPush(PUSH_CODE_MSG_WAITING);
 }

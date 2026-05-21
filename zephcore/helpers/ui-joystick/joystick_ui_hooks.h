@@ -105,6 +105,17 @@ void ui_signal_refresh(void);
  */
 void ui_signal_tx(void);
 
+/**
+ * Try to match an incoming ACK against the joystick UI's pending-DM table.
+ * On match: cancels the retry timer, marks the entry delivered, fires the
+ * deferred BLE-app mirror with the success prefix, and writes the recipient's
+ * 6-byte pubkey prefix to out_pubkey (caller uses it for BaseChatMesh's
+ * return-path-retry housekeeping).
+ *
+ * @return true if matched (out_pubkey is filled), false otherwise
+ */
+bool ui_joystick_try_match_ack(uint32_t ack, uint8_t out_pubkey[6]);
+
 #ifdef __cplusplus
 }
 #endif

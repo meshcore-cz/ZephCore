@@ -83,6 +83,163 @@ void JoystickUITask::onDisplayStateChanged()
 	_was_display_on = is_on;
 }
 
+/* ===== Outgoing DM tracking ===== */
+
+void JoystickUITask::pendingRetryTimerCb(struct k_timer *t)
+{
+	/* ISR — mark slot ready for retry, wake main loop. */
+	PendingSend *slot = (PendingSend *)k_timer_user_data_get(t);
+	if (!slot || !slot->task) return;
+	slot->retry_due = true;
+	if (s_signal_fn) s_signal_fn();
+}
+
+int JoystickUITask::allocPendingSendSlot()
+{
+	for (int i = 0; i < MAX_PENDING_SENDS; i++) {
+		if (!_pending_sends[i].active) return i;
+	}
+	return -1;
+}
+
+void JoystickUITask::doPendingSend(int slot_idx)
+{
+	PendingSend &s = _pending_sends[slot_idx];
+	ContactInfo *recipient = _mesh ? _mesh->lookupContactByPubKey(s.recipient_pubkey, PUB_KEY_SIZE) : nullptr;
+	if (!recipient) {
+		s.failed = true;
+		completePendingSend(slot_idx);
+		return;
+	}
+
+	/* Attempt 4 (5th, 0-indexed) — clear the saved path so this send forces
+	 * flood. The clear persists so future DMs to this contact also re-discover. */
+	if (s.attempt == MAX_SEND_ATTEMPTS - 1) {
+		recipient->out_path_len = OUT_PATH_UNKNOWN;
+		if (CompanionMesh *cm = static_cast<CompanionMesh *>(_mesh)) {
+			cm->markContactsDirtyPublic();
+		}
+	}
+
+	uint32_t expected_ack = 0, est_timeout = 0;
+	int result = _mesh->sendMessage(*recipient, s.timestamp, s.attempt, s.text,
+									expected_ack, est_timeout);
+	if (result == 0) {
+		/* sendMessage rejected (e.g. queue full) — back off and try again. */
+		s.timeout_ms = 3000;
+		schedulePendingRetry(slot_idx);
+		return;
+	}
+	ui_signal_tx();
+	s.expected_ack = expected_ack;
+	/* Allow the ACK round-trip (2× est_timeout + small grace) before retrying. */
+	s.timeout_ms = (est_timeout > 0) ? (est_timeout * 2 + 3000) : 8000;
+	schedulePendingRetry(slot_idx);
+}
+
+void JoystickUITask::schedulePendingRetry(int slot_idx)
+{
+	PendingSend &s = _pending_sends[slot_idx];
+	k_timer_stop(&s.retry_timer);
+	k_timer_start(&s.retry_timer, K_MSEC(s.timeout_ms), K_NO_WAIT);
+}
+
+void JoystickUITask::completePendingSend(int slot_idx)
+{
+	PendingSend &s = _pending_sends[slot_idx];
+	k_timer_stop(&s.retry_timer);
+	bool delivered = s.delivered;
+
+	/* Update the on-device history entry (UnreadScreen) to reflect outcome. */
+	if (_unread) {
+		_unread->markSentEntryStatus(s.timestamp, s.recipient_name, delivered);
+	}
+
+	/* Now (and only now) mirror to the BLE app with the outcome prefix. */
+	ContactInfo *recipient = _mesh ? _mesh->lookupContactByPubKey(s.recipient_pubkey, PUB_KEY_SIZE) : nullptr;
+	if (recipient) {
+		if (CompanionMesh *cm = static_cast<CompanionMesh *>(_mesh)) {
+			cm->queueLocalSentContactMessage(*recipient, s.timestamp, s.text, delivered);
+		}
+	}
+
+	s.active = false;
+	s.retry_due = false;
+	_next_refresh = 0;
+}
+
+void JoystickUITask::processPendingRetries()
+{
+	for (int i = 0; i < MAX_PENDING_SENDS; i++) {
+		PendingSend &s = _pending_sends[i];
+		if (!s.active || !s.retry_due) continue;
+		s.retry_due = false;
+		if (s.delivered) {
+			completePendingSend(i);
+			continue;
+		}
+		if (s.attempt + 1 >= MAX_SEND_ATTEMPTS) {
+			/* Out of retries. */
+			s.failed = true;
+			completePendingSend(i);
+			continue;
+		}
+		s.attempt++;
+		doPendingSend(i);
+	}
+}
+
+bool JoystickUITask::startPendingDM(ContactInfo &recipient, uint32_t ts, const char *text)
+{
+	if (!text || !_mesh) return false;
+	int slot_idx = allocPendingSendSlot();
+	if (slot_idx < 0) {
+		showAlert("Send queue full", 1500);
+		return false;
+	}
+
+	PendingSend &s = _pending_sends[slot_idx];
+	s.active = true;
+	s.retry_due = false;
+	s.delivered = false;
+	s.failed = false;
+	memcpy(s.recipient_pubkey, recipient.id.pub_key, PUB_KEY_SIZE);
+	strncpy(s.recipient_name, recipient.name, sizeof(s.recipient_name) - 1);
+	s.recipient_name[sizeof(s.recipient_name) - 1] = '\0';
+	s.timestamp = ts;
+	size_t tlen = strlen(text);
+	if (tlen > MAX_TEXT_LEN) tlen = MAX_TEXT_LEN;
+	memcpy(s.text, text, tlen);
+	s.text[tlen] = '\0';
+	s.attempt = 0;
+	s.expected_ack = 0;
+	s.timeout_ms = 0;
+
+	/* Local history entry now (with pending marker — addPreview uses
+	 * OUT_PATH_SENT which becomes "(>>) ContactName:"; markSentEntryStatus()
+	 * rewrites the marker on outcome). */
+	if (_unread) {
+		_unread->addPreview(OUT_PATH_SENT, s.recipient_name, s.text, /*initially_read=*/true);
+	}
+
+	doPendingSend(slot_idx);
+	return true;
+}
+
+ContactInfo *JoystickUITask::tryMatchPendingAck(uint32_t ack)
+{
+	if (ack == 0) return nullptr;
+	for (int i = 0; i < MAX_PENDING_SENDS; i++) {
+		PendingSend &s = _pending_sends[i];
+		if (!s.active || s.expected_ack != ack) continue;
+		s.delivered = true;
+		ContactInfo *recipient = _mesh ? _mesh->lookupContactByPubKey(s.recipient_pubkey, PUB_KEY_SIZE) : nullptr;
+		completePendingSend(i);
+		return recipient;
+	}
+	return nullptr;
+}
+
 static bool joystick_queue_initialized;
 
 #define ENTER_LONG_PRESS_MS  500
@@ -240,6 +397,16 @@ void JoystickUITask::begin(BaseChatMesh *mesh, mesh::ZephyrRTCClock *rtc, NodePr
 	k_timer_init(&_lock_timer, lockTimerCb, NULL);
 	k_timer_user_data_set(&_lock_timer, this);
 	scheduleLockTimer();
+
+	/* Pending-DM retry timers — one per slot, one-shot, callback signals
+	 * refresh and sets the slot's retry_due flag for the main loop. */
+	for (int i = 0; i < MAX_PENDING_SENDS; i++) {
+		_pending_sends[i].task = this;
+		_pending_sends[i].active = false;
+		_pending_sends[i].retry_due = false;
+		k_timer_init(&_pending_sends[i].retry_timer, pendingRetryTimerCb, NULL);
+		k_timer_user_data_set(&_pending_sends[i].retry_timer, &_pending_sends[i]);
+	}
 
 	/* Init key queue */
 	k_msgq_init(&_key_queue, _key_buf, sizeof(char), JOYSTICK_KEY_QUEUE_DEPTH);
@@ -485,6 +652,9 @@ void JoystickUITask::loop()
 	 * happens behind our back) so the current screen can pause/resume any
 	 * periodic timers it owns. */
 	onDisplayStateChanged();
+
+	/* Pending-DM retry timers may have fired in ISR. */
+	processPendingRetries();
 
 	/* Dequeue key events */
 	char key = 0;
@@ -829,20 +999,10 @@ bool JoystickUITask::sendComposedMessage(const char *text)
 		ContactInfo *recipient = _mesh->lookupContactByPubKey(_compose_contact_pubkey, PUB_KEY_SIZE);
 		if (!recipient) return false;
 		uint32_t ts = _rtc ? _rtc->getCurrentTimeUnique() : k_uptime_get_32();
-		uint32_t expected_ack = 0, est_timeout = 0;
-		int result = _mesh->sendMessage(*recipient, ts, 0, text, expected_ack, est_timeout);
-		if (result == 0) return false;
-		ui_signal_tx();
-		if (_unread) {
-			/* Sent message: in history but not "unread" (user sent it). */
-			_unread->addPreview(OUT_PATH_SENT, _compose_contact_name, text,
-					/*initially_read=*/true);
-		}
-		/* Notify BLE app so it can mirror the sent message in its UI. */
-		if (CompanionMesh *cm = static_cast<CompanionMesh *>(_mesh)) {
-			cm->queueLocalSentContactMessage(*recipient, ts, text);
-		}
-		return true;
+		/* Goes through the pending-DM machinery: tracks expected_ack, retries
+		 * on no-ACK (up to MAX_SEND_ATTEMPTS, last attempt forces flood),
+		 * updates UnreadScreen + queues BLE-app mirror with outcome prefix. */
+		return startPendingDM(*recipient, ts, text);
 	}
 
 	if (_compose_channel_idx == -2) {

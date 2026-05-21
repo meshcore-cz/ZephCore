@@ -42,6 +42,22 @@ void UnreadScreen::onExit()
 	k_timer_stop(&_preview_timer);
 }
 
+void UnreadScreen::markSentEntryStatus(uint32_t ts, const char *contact_name, bool delivered)
+{
+	if (!contact_name) return;
+	for (int i = 0; i < MAX_UNREAD_MSGS; i++) {
+		if (_entries[i].timestamp != ts) continue;
+		/* Only touch entries that look like our own sent message to that
+		 * contact — origin currently starts with "(>>" (set by addPreview
+		 * when path_len == OUT_PATH_SENT). */
+		if (strncmp(_entries[i].origin, "(>>", 3) != 0) continue;
+		if (!strstr(_entries[i].origin, contact_name)) continue;
+		snprintf(_entries[i].origin, sizeof(_entries[i].origin),
+				 "(>>%s) %s:", delivered ? "+" : "X", contact_name);
+		return;
+	}
+}
+
 void UnreadScreen::normalizeUnreadState()
 {
 	if (_entry_count < 0) _entry_count = 0;

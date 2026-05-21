@@ -193,13 +193,13 @@ public:
 
 	/**
 	 * Queue a locally-originated DM into the BLE offline queue and signal
-	 * MSG_WAITING. The frame uses path_len = OUT_PATH_SENT (0xFE) so an
-	 * updated phone app can render it as outbound. Older apps still see a
-	 * message text in their inbox (possibly mis-rendered as "0xFE hops"),
-	 * but the text content is correct so no info is lost.
+	 * MSG_WAITING. The frame uses path_len = OUT_PATH_SENT (0xFE) and the
+	 * body is prefixed with "(>>✓) " on delivery or "(>>✗) " on failure so
+	 * the phone app shows a visible outcome indicator without needing
+	 * protocol-level support.
 	 */
 	void queueLocalSentContactMessage(const ContactInfo &contact, uint32_t timestamp,
-			const char *text);
+			const char *text, bool delivered);
 
 	/**
 	 * Queue a locally-originated channel message into the BLE offline queue
@@ -371,6 +371,10 @@ public:
 	void clearJoystickPingTag()            { _pending_joystick_ping_tag = 0; }
 	void setJoystickAdminTag(uint32_t tag) { _pending_joystick_admin_tag = tag; }
 	void clearJoystickAdminTag()           { _pending_joystick_admin_tag = 0; }
+	/* Force a contacts-flush schedule from outside (joystick UI clears a
+	 * stale out_path_len during 5th-attempt fallback flood and needs the
+	 * change to persist to /ext/contacts3). */
+	void markContactsDirtyPublic() { markContactsDirty(); }
 private:
 #endif
 
