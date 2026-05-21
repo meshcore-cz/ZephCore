@@ -44,7 +44,8 @@ public:
 	/* Call once after mesh/prefs are loaded */
 	void begin(BaseChatMesh *mesh, mesh::ZephyrRTCClock *rtc, NodePrefs *prefs);
 
-	/* Call from mesh event loop: processes input, renders, calls poll() */
+	/* Call from mesh event loop: drains the key queue, dispatches lifecycle
+	 * events on display-state transitions, and renders when due. */
 	void loop();
 
 	/* Called from CompanionMesh callbacks (mesh thread context) */
@@ -113,7 +114,6 @@ public:
 	/* Message / compose accessors */
 	int getUnreadCount();
 	int getStoredMsgCount() const;
-	int getMsgCount() const { return _msgcount; }
 	int getContactMsgCount(const char *contact_name) const;
 	bool getContactMsgAt(const char *contact_name, int idx, const char *&out_msg,
 		uint32_t &out_ts, uint8_t *out_path = nullptr) const;
@@ -145,7 +145,7 @@ public:
 	NodePrefs *getPrefs() const { return _prefs; }
 	JoystickDisplay &getDisplay() { return _display; }
 
-	/* Battery (updated via ui_set_battery from housekeeping) */
+	/* Battery cache (updated via ui_set_battery from ui_refresh_battery's render-path call) */
 	void setCachedBattMilliVolts(uint16_t mv) { _cached_batt_mv = mv; }
 
 	/* Radio stats (fed from main companion loop) */
@@ -239,7 +239,6 @@ private:
 	bool _wake_on_msg;
 	bool _ble_connected;
 	bool _ble_enabled;
-	int _msgcount;
 	int16_t _noise_floor;
 	uint32_t _pkt_recv, _pkt_sent, _pkt_errors;
 
@@ -293,6 +292,5 @@ private:
 	static struct k_msgq _key_queue;
 
 	/* Startup */
-	uint32_t _started_at;
 	bool _initialized;
 };

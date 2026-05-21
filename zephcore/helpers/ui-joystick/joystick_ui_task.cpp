@@ -199,12 +199,12 @@ JoystickUITask::JoystickUITask()
 	  _next_refresh(0), _screen_off_ms(AUTO_OFF_MILLIS), _was_display_on(false),
 	  _cached_batt_mv(0), _battery_display_mode(0),
 	  _brightness(100), _wake_on_msg(true), _ble_connected(false),
-	  _ble_enabled(true), _msgcount(0), _noise_floor(-120),
+	  _ble_enabled(true), _noise_floor(-120),
 	  _pkt_recv(0), _pkt_sent(0), _pkt_errors(0), _alert_expiry(0),
 	  _locked(false), _lock_step(0),
 	  _compose_is_contact(false), _compose_channel_idx(-1),
 	  _ch_preview_count(0), _ch_preview_head(JOYSTICK_OFFLINE_QUEUE_SIZE - 1),
-	  _started_at(0), _initialized(false)
+	  _initialized(false)
 {
 	memset(_alert, 0, sizeof(_alert));
 	memset(_compose_channel_name, 0, sizeof(_compose_channel_name));
@@ -222,7 +222,6 @@ void JoystickUITask::begin(BaseChatMesh *mesh, mesh::ZephyrRTCClock *rtc, NodePr
 	_mesh = mesh;
 	_rtc = rtc;
 	_prefs = prefs;
-	_started_at = k_uptime_get_32();
 
 	if (prefs && prefs->display_brightness >= 10) {
 		_brightness = prefs->display_brightness;
@@ -671,7 +670,7 @@ void JoystickUITask::toggleWakeOnMsg()
 /* ===== Notifications from mesh ===== */
 void JoystickUITask::newMsg(uint8_t path_len, const char *from_name, const char *text, int msgcount)
 {
-	_msgcount = msgcount;
+	(void)msgcount;  /* tracked by CompanionMesh; we mirror via msgRead() side-effect only */
 	if (_unread) {
 		/* When BLE phone is connected it pulls offline queue and marks read;
 		 * keep the message in our local history but don't count as unread. */
@@ -726,7 +725,9 @@ void JoystickUITask::newChannelMsg(const char *channel_name, const char *text,
 
 void JoystickUITask::msgRead(int msgcount)
 {
-	_msgcount = msgcount;
+	/* Called from CompanionMesh when the BLE-offline-queue drains to 0
+	 * (phone synced); auto-navigate home if the user is sitting on the
+	 * Unread list looking at what just got cleared. */
 	if (msgcount == 0 && _curr == _unread) {
 		gotoHomeScreen();
 	}
