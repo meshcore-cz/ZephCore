@@ -191,6 +191,23 @@ public:
 	 */
 	const AdvertPath *findAdvertPath(const uint8_t *pubkey_prefix, int prefix_len);
 
+	/**
+	 * Queue a locally-originated DM into the BLE offline queue and signal
+	 * MSG_WAITING. The frame uses path_len = OUT_PATH_SENT (0xFE) so an
+	 * updated phone app can render it as outbound. Older apps still see a
+	 * message text in their inbox (possibly mis-rendered as "0xFE hops"),
+	 * but the text content is correct so no info is lost.
+	 */
+	void queueLocalSentContactMessage(const ContactInfo &contact, uint32_t timestamp,
+			const char *text);
+
+	/**
+	 * Queue a locally-originated channel message into the BLE offline queue
+	 * and signal MSG_WAITING. See queueLocalSentContactMessage().
+	 */
+	void queueLocalSentChannelMessage(uint8_t channel_idx, uint32_t timestamp,
+			const char *text);
+
 	/* DataStoreHost interface */
 	bool onContactLoaded(const ContactInfo &c) override;
 	bool getContactForSave(uint32_t idx, ContactInfo &c) override;

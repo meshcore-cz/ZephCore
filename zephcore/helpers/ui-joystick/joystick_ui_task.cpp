@@ -388,6 +388,27 @@ void JoystickUITask::renderLockOverlay()
 	mc_display_text((w - title_w) / 2, 6, title, false);
 	mc_display_hline(2, 6 + fh + 2, w - 4);
 
+	/* Battery + unread (cached values; refreshed on screen wake via the
+	 * normal render-path ui_refresh_battery() gate, so locked-and-asleep
+	 * doesn't burn power). */
+	char batt_buf[16];
+	if (_cached_batt_mv > 0) {
+		int pct = ((int)_cached_batt_mv - kBattMinMv) * 100 / (kBattMaxMv - kBattMinMv);
+		if (pct < 0) pct = 0;
+		if (pct > 100) pct = 100;
+		snprintf(batt_buf, sizeof(batt_buf), "Batt: %d%%", pct);
+	} else {
+		snprintf(batt_buf, sizeof(batt_buf), "Batt: --");
+	}
+	int batt_w = (int)strlen(batt_buf) * fw;
+	mc_display_text((w - batt_w) / 2, 6 + fh + 6, batt_buf, false);
+
+	char unread_buf[16];
+	int unread = (_unread) ? static_cast<UnreadScreen *>(_unread)->getUnreadCount() : 0;
+	snprintf(unread_buf, sizeof(unread_buf), "Unread: %d", unread);
+	int unread_w = (int)strlen(unread_buf) * fw;
+	mc_display_text((w - unread_w) / 2, 6 + fh + 6 + fh + 2, unread_buf, false);
+
 	/* Three step unlock sequence */
 	const char *toks[3] = { "Back", "OK", "Back" };
 	const int gap = 6;
@@ -435,7 +456,10 @@ void JoystickUITask::loop()
 	char key = 0;
 	if (k_msgq_get(&_key_queue, &key, K_NO_WAIT) == 0) {
 		if (!_display.isOn()) {
-			/* Wake display, consume the key press */
+			/* Wake display, consume the key press. Invalidate the battery
+			 * cache so the upcoming render samples a fresh value — matters
+			 * for the lock screen, which the user is about to see. */
+			ui_invalidate_battery_cache();
 			_display.turnOn();  /* mc_display_on() already calls mc_display_reset_auto_off() */
 			_auto_off = now + _screen_off_ms;
 			_next_refresh = 0;
@@ -628,7 +652,10 @@ void JoystickUITask::newMsg(uint8_t path_len, const char *from_name, const char 
 {
 	_msgcount = msgcount;
 	if (_unread) {
-		static_cast<UnreadScreen *>(_unread)->addPreview(path_len, from_name, text);
+		/* When BLE phone is connected it pulls offline queue and marks read;
+		 * keep the message in our local history but don't count as unread. */
+		static_cast<UnreadScreen *>(_unread)->addPreview(path_len, from_name, text,
+				/*initially_read=*/_ble_connected);
 	}
 	/* Wake display if wake on msg is enabled and no BLE peer is connected */
 	if (_wake_on_msg && !_ble_connected && !_display.isOn()) {
@@ -661,7 +688,9 @@ void JoystickUITask::newChannelMsg(const char *channel_name, const char *text,
 	if (_unread) {
 		char ch_from[48];
 		snprintf(ch_from, sizeof(ch_from), "#%s", channel_name ? channel_name : "?");
-		static_cast<UnreadScreen *>(_unread)->addPreview(path_len, ch_from, text);
+		/* BLE-connected → phone reads via offline queue, don't count as unread. */
+		static_cast<UnreadScreen *>(_unread)->addPreview(path_len, ch_from, text,
+				/*initially_read=*/_ble_connected);
 	}
 	if (_wake_on_msg && !_ble_connected && !_display.isOn()) {
 		_display.turnOn();
@@ -784,7 +813,13 @@ bool JoystickUITask::sendComposedMessage(const char *text)
 		if (result == 0) return false;
 		ui_signal_tx();
 		if (_unread) {
-			static_cast<UnreadScreen *>(_unread)->addPreview(OUT_PATH_SENT, _compose_contact_name, text);
+			/* Sent message: in history but not "unread" (user sent it). */
+			static_cast<UnreadScreen *>(_unread)->addPreview(OUT_PATH_SENT, _compose_contact_name, text,
+					/*initially_read=*/true);
+		}
+		/* Notify BLE app so it can mirror the sent message in its UI. */
+		if (CompanionMesh *cm = static_cast<CompanionMesh *>(_mesh)) {
+			cm->queueLocalSentContactMessage(*recipient, ts, text);
 		}
 		return true;
 	}
@@ -816,6 +851,10 @@ bool JoystickUITask::sendComposedMessage(const char *text)
 			p.timestamp = ts;
 			p.path_len = OUT_PATH_SENT;
 			if (_ch_preview_count < JOYSTICK_OFFLINE_QUEUE_SIZE) _ch_preview_count++;
+			/* Notify BLE app so it can mirror the sent message in its UI. */
+			if (CompanionMesh *cm = static_cast<CompanionMesh *>(_mesh)) {
+				cm->queueLocalSentChannelMessage((uint8_t)_compose_channel_idx, ts, text);
+			}
 		}
 		return ok;
 	}
@@ -831,7 +870,13 @@ bool JoystickUITask::sendChannelMessage(const char *text)
 	uint32_t ts = _rtc ? _rtc->getCurrentTimeUnique() : k_uptime_get_32();
 	bool ok = _mesh->sendGroupMessage(ts, ch.channel,
 			_prefs ? _prefs->node_name : "", text, (int)strlen(text));
-	if (ok) ui_signal_tx();
+	if (ok) {
+		ui_signal_tx();
+		/* Notify BLE app so it can mirror the sent message in its UI. */
+		if (CompanionMesh *cm = static_cast<CompanionMesh *>(_mesh)) {
+			cm->queueLocalSentChannelMessage((uint8_t)_compose_channel_idx, ts, text);
+		}
+	}
 	return ok;
 }
 

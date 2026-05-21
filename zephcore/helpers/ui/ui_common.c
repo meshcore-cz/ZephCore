@@ -224,3 +224,12 @@ void ui_refresh_battery(void)
 	s_batt_last_read_ms = k_uptime_get_32();
 	s_batt_ever_read = true;
 }
+
+/* Forget the freshness timestamp so the next ui_refresh_battery() call is
+ * guaranteed to sample the ADC. Use when entering a state where a fresh
+ * reading matters (e.g. just woke the screen from sleep). */
+void ui_invalidate_battery_cache(void)
+{
+	s_batt_ever_read = false;
+	s_batt_last_read_ms = 0;
+}

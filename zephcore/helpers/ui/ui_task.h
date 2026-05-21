@@ -183,6 +183,14 @@ void ui_set_battery_provider(uint16_t (*provider)(void));
 void ui_refresh_battery(void);
 
 /**
+ * Drop the battery-refresh freshness timestamp. The next
+ * ui_refresh_battery() call is guaranteed to sample the ADC.
+ * Use when waking the display from sleep so the user sees a current
+ * reading immediately instead of a possibly-stale cached value.
+ */
+void ui_invalidate_battery_cache(void);
+
+/**
  * Notify UI of a received contact message.
  * Rich UIs display the text and sender; simpler ones forward to
  * ui_notify(UI_EVENT_CONTACT_MSG) + ui_set_msg_count().

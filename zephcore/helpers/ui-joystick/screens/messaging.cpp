@@ -81,7 +81,8 @@ const UnreadScreen::MsgEntry *UnreadScreen::getByListIndex(int idx) const
 	return nullptr;
 }
 
-void UnreadScreen::addPreview(uint8_t path_len, const char *from_name, const char *msg)
+void UnreadScreen::addPreview(uint8_t path_len, const char *from_name, const char *msg,
+		bool initially_read)
 {
 	normalizeUnreadState();
 	_head_index = (_head_index + 1) % MAX_UNREAD_MSGS;
@@ -92,8 +93,8 @@ void UnreadScreen::addPreview(uint8_t path_len, const char *from_name, const cha
 	}
 	MsgEntry &entry = _entries[_head_index];
 	entry.timestamp = _rtc->getCurrentTime();
-	entry.read = false;
-	if (_visible_unread_count < MAX_UNREAD_MSGS) _visible_unread_count++;
+	entry.read = initially_read;
+	if (!initially_read && _visible_unread_count < MAX_UNREAD_MSGS) _visible_unread_count++;
 
 	const char *safe_from = (from_name && from_name[0]) ? from_name : "unknown";
 	const char *safe_msg = msg ? msg : "";

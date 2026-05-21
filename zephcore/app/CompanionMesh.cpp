@@ -767,6 +767,71 @@ void CompanionMesh::queueContactMessage(const ContactInfo &contact, mesh::Packet
 	queueOfflineMessage(frame, i);
 }
 
+void CompanionMesh::queueLocalSentContactMessage(const ContactInfo &contact,
+	uint32_t timestamp, const char *text)
+{
+	if (!text) return;
+	uint8_t frame[MAX_FRAME_SIZE];
+	int i = 0;
+
+	if (_app_target_ver >= 3) {
+		frame[i++] = PACKET_CONTACT_MSG_V3;
+		frame[i++] = 0;  // SNR (local origin, no incoming packet)
+		frame[i++] = 0;  // reserved1
+		frame[i++] = 0;  // reserved2
+	} else {
+		frame[i++] = PACKET_CONTACT_MSG_RECV;
+	}
+	memcpy(&frame[i], contact.id.pub_key, 6);
+	i += 6;
+	frame[i++] = OUT_PATH_SENT;        // mark as locally-originated
+	frame[i++] = TXT_TYPE_PLAIN;
+	put_le32(&frame[i], timestamp);
+	i += 4;
+	size_t text_len = strlen(text);
+	if (i + text_len > sizeof(frame)) {
+		text_len = sizeof(frame) - i;
+	}
+	memcpy(&frame[i], text, text_len);
+	i += text_len;
+
+	LOG_DBG("queueLocalSentContactMessage: frame_len=%d", i);
+	queueOfflineMessage(frame, i);
+	sendPush(PUSH_CODE_MSG_WAITING);
+}
+
+void CompanionMesh::queueLocalSentChannelMessage(uint8_t channel_idx,
+	uint32_t timestamp, const char *text)
+{
+	if (!text) return;
+	uint8_t frame[MAX_FRAME_SIZE];
+	int i = 0;
+
+	if (_app_target_ver >= 3) {
+		frame[i++] = PACKET_CHANNEL_MSG_V3;
+		frame[i++] = 0;  // SNR
+		frame[i++] = 0;  // reserved1
+		frame[i++] = 0;  // reserved2
+	} else {
+		frame[i++] = PACKET_CHANNEL_MSG_RECV;
+	}
+	frame[i++] = channel_idx;
+	frame[i++] = OUT_PATH_SENT;
+	frame[i++] = TXT_TYPE_PLAIN;
+	put_le32(&frame[i], timestamp);
+	i += 4;
+	size_t text_len = strlen(text);
+	if (i + text_len > sizeof(frame)) {
+		text_len = sizeof(frame) - i;
+	}
+	memcpy(&frame[i], text, text_len);
+	i += text_len;
+
+	LOG_DBG("queueLocalSentChannelMessage: frame_len=%d channel_idx=%d", i, channel_idx);
+	queueOfflineMessage(frame, i);
+	sendPush(PUSH_CODE_MSG_WAITING);
+}
+
 void CompanionMesh::onCommandDataRecv(const ContactInfo &contact, mesh::Packet *pkt,
 	uint32_t sender_timestamp, const char *text)
 {

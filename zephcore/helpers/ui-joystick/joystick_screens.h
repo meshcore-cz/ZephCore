@@ -402,7 +402,11 @@ public:
 	void activatePreview(bool transient, uint32_t timeout_ms = 10000);
 	int getUnreadCount();
 	int getStoredMsgCount() const;
-	void addPreview(uint8_t path_len, const char *from_name, const char *msg);
+	/* @param initially_read true → store in history without counting as unread
+	 *                       (used for sent messages, and for received messages
+	 *                       when a BLE phone is connected and will sync them). */
+	void addPreview(uint8_t path_len, const char *from_name, const char *msg,
+			bool initially_read = false);
 	bool getStoredMessageForSourceAt(const char *source, uint32_t ts, const char *&out_msg) const;
 	bool getLatestStoredMessageForSource(const char *source, const char *&out_msg, uint32_t *out_ts = nullptr) const;
 	int getContactMsgCount(const char *contact_name) const;

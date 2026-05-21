@@ -47,9 +47,3 @@
 
 /* List view constants */
 #define UI_RECENT_LIST_SIZE   4    /* max items visible in a scrollable list */
-
-/* UI display marker: this MsgEntry/preview slot represents a message
- * WE SENT (vs received). Used only inside the joystick UI's stored-message
- * structs — never assigned to ContactInfo::out_path_len, never serialized,
- * never sent over the air. */
-#define OUT_PATH_SENT      0xFE
