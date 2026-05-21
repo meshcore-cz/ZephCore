@@ -826,7 +826,7 @@ void CompanionMesh::queueLocalSentContactMessage(const ContactInfo &contact,
 }
 
 void CompanionMesh::queueLocalSentChannelMessage(uint8_t channel_idx,
-	uint32_t timestamp, const char *text)
+	uint32_t timestamp, const char *text, bool heard_repeat)
 {
 	if (!text) return;
 	uint8_t frame[MAX_FRAME_SIZE];
@@ -846,12 +846,13 @@ void CompanionMesh::queueLocalSentChannelMessage(uint8_t channel_idx,
 	put_le32(&frame[i], timestamp);
 	i += 4;
 
-	/* Channel wire-text is "<sender_name>: <body>" — the same prefix that
-	 * BaseChatMesh::sendGroupMessage applied before transmitting over LoRa.
-	 * The phone app parses up to the first ':' as the sender, the rest as
-	 * the body, so we need to mirror that format here or the message
-	 * shows up empty with the sender slot empty too. */
-	int n = snprintf((char *)&frame[i], sizeof(frame) - i, "%s: ", prefs.node_name);
+	/* Channel wire-text is "<sender_name>: <body>" — the same prefix
+	 * BaseChatMesh::sendGroupMessage applied over LoRa.  Prepend a
+	 * heard/unheard marker so the phone app can distinguish whether the
+	 * mesh propagated our flood. */
+	const char *marker = heard_repeat ? "(>>\xe2\x9c\x93) "    /* (>>✓) UTF-8 */
+									  : "(>>\xe2\x9c\x97) ";   /* (>>✗) UTF-8 */
+	int n = snprintf((char *)&frame[i], sizeof(frame) - i, "%s%s: ", marker, prefs.node_name);
 	if (n < 0) n = 0;
 	if ((size_t)n > sizeof(frame) - i) n = sizeof(frame) - i;
 	i += n;
@@ -862,7 +863,8 @@ void CompanionMesh::queueLocalSentChannelMessage(uint8_t channel_idx,
 	memcpy(&frame[i], text, text_len);
 	i += text_len;
 
-	LOG_DBG("queueLocalSentChannelMessage: frame_len=%d channel_idx=%d", i, channel_idx);
+	LOG_DBG("queueLocalSentChannelMessage: frame_len=%d channel_idx=%d heard=%d",
+		i, channel_idx, (int)heard_repeat);
 	queueOfflineMessage(frame, i);
 	sendPush(PUSH_CODE_MSG_WAITING);
 }

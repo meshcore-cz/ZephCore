@@ -240,6 +240,106 @@ ContactInfo *JoystickUITask::tryMatchPendingAck(uint32_t ack)
 	return nullptr;
 }
 
+/* ===== Channel-send feedback ===== */
+
+void JoystickUITask::pendingChannelFeedbackCb(struct k_timer *t)
+{
+	PendingChannelSend *slot = (PendingChannelSend *)k_timer_user_data_get(t);
+	if (!slot || !slot->task) return;
+	slot->feedback_due = true;
+	if (s_signal_fn) s_signal_fn();
+}
+
+int JoystickUITask::allocPendingChannelSlot()
+{
+	for (int i = 0; i < MAX_PENDING_CHANNEL_SENDS; i++) {
+		if (!_pending_channel_sends[i].active) return i;
+	}
+	return -1;
+}
+
+void JoystickUITask::completePendingChannelSend(int slot_idx, bool heard)
+{
+	PendingChannelSend &s = _pending_channel_sends[slot_idx];
+
+	/* Update the local _ch_previews entry's path_len so the UI shows the
+	 * outcome ("sent+" / "sent?"). Match by stored ring index + timestamp
+	 * to defend against ring wrap-around. */
+	if (s.preview_index >= 0 && s.preview_index < JOYSTICK_OFFLINE_QUEUE_SIZE &&
+		_ch_previews[s.preview_index].timestamp == s.preview_timestamp) {
+		_ch_previews[s.preview_index].path_len = heard ? OUT_PATH_SENT_HEARD : OUT_PATH_SENT_UNHEARD;
+	}
+
+	/* Mirror to BLE app now (deferred until outcome is known) with the
+	 * heard/unheard prefix. */
+	if (CompanionMesh *cm = static_cast<CompanionMesh *>(_mesh)) {
+		cm->queueLocalSentChannelMessage(s.channel_idx, s.timestamp, s.text, heard);
+	}
+
+	s.active = false;
+	s.feedback_due = false;
+	_next_refresh = 0;
+}
+
+void JoystickUITask::processPendingChannelFeedback()
+{
+	for (int i = 0; i < MAX_PENDING_CHANNEL_SENDS; i++) {
+		PendingChannelSend &s = _pending_channel_sends[i];
+		if (!s.active || !s.feedback_due) continue;
+		s.feedback_due = false;
+		int dupe_count = _mesh ? _mesh->getContentionTracker().extractDupeCount(s.hash) : -1;
+		bool heard = (dupe_count > 0);
+		completePendingChannelSend(i, heard);
+	}
+}
+
+bool JoystickUITask::startPendingChannel(uint8_t channel_idx, ChannelDetails &ch,
+		uint32_t ts, const char *text)
+{
+	if (!text || !_mesh) return false;
+	int slot_idx = allocPendingChannelSlot();
+	if (slot_idx < 0) {
+		showAlert("Channel queue full", 1500);
+		return false;
+	}
+
+	uint32_t pkt_hash = 0;
+	int text_len = (int)strlen(text);
+	bool ok = _mesh->sendGroupMessage(ts, ch.channel,
+			_prefs ? _prefs->node_name : "", text, text_len, &pkt_hash);
+	if (!ok) return false;
+	ui_signal_tx();
+
+	/* Local preview now (with "sent" path_len; we'll rewrite to
+	 * SENT_HEARD/SENT_UNHEARD on feedback). */
+	_ch_preview_head = (_ch_preview_head + 1) % JOYSTICK_OFFLINE_QUEUE_SIZE;
+	ChannelMsgPreview &p = _ch_previews[_ch_preview_head];
+	strncpy(p.channel, ch.name, sizeof(p.channel) - 1);
+	p.channel[sizeof(p.channel) - 1] = '\0';
+	strncpy(p.text, text, sizeof(p.text) - 1);
+	p.text[sizeof(p.text) - 1] = '\0';
+	p.timestamp = ts;
+	p.path_len = OUT_PATH_SENT;
+	if (_ch_preview_count < JOYSTICK_OFFLINE_QUEUE_SIZE) _ch_preview_count++;
+
+	PendingChannelSend &s = _pending_channel_sends[slot_idx];
+	s.active = true;
+	s.feedback_due = false;
+	s.channel_idx = channel_idx;
+	s.preview_index = _ch_preview_head;
+	s.preview_timestamp = ts;
+	s.timestamp = ts;
+	s.hash = pkt_hash;
+	size_t tl = (size_t)text_len;
+	if (tl > MAX_TEXT_LEN) tl = MAX_TEXT_LEN;
+	memcpy(s.text, text, tl);
+	s.text[tl] = '\0';
+
+	k_timer_stop(&s.feedback_timer);
+	k_timer_start(&s.feedback_timer, K_MSEC(CHANNEL_FEEDBACK_WINDOW_MS), K_NO_WAIT);
+	return true;
+}
+
 static bool joystick_queue_initialized;
 
 #define ENTER_LONG_PRESS_MS  500
@@ -406,6 +506,15 @@ void JoystickUITask::begin(BaseChatMesh *mesh, mesh::ZephyrRTCClock *rtc, NodePr
 		_pending_sends[i].retry_due = false;
 		k_timer_init(&_pending_sends[i].retry_timer, pendingRetryTimerCb, NULL);
 		k_timer_user_data_set(&_pending_sends[i].retry_timer, &_pending_sends[i]);
+	}
+
+	/* Channel-send feedback timers. */
+	for (int i = 0; i < MAX_PENDING_CHANNEL_SENDS; i++) {
+		_pending_channel_sends[i].task = this;
+		_pending_channel_sends[i].active = false;
+		_pending_channel_sends[i].feedback_due = false;
+		k_timer_init(&_pending_channel_sends[i].feedback_timer, pendingChannelFeedbackCb, NULL);
+		k_timer_user_data_set(&_pending_channel_sends[i].feedback_timer, &_pending_channel_sends[i]);
 	}
 
 	/* Init key queue */
@@ -655,6 +764,7 @@ void JoystickUITask::loop()
 
 	/* Pending-DM retry timers may have fired in ISR. */
 	processPendingRetries();
+	processPendingChannelFeedback();
 
 	/* Dequeue key events */
 	char key = 0;
@@ -1019,25 +1129,10 @@ bool JoystickUITask::sendComposedMessage(const char *text)
 		ChannelDetails ch;
 		if (!_mesh->getChannel(_compose_channel_idx, ch)) return false;
 		uint32_t ts = _rtc ? _rtc->getCurrentTimeUnique() : k_uptime_get_32();
-		bool ok = _mesh->sendGroupMessage(ts, ch.channel,
-				_prefs ? _prefs->node_name : "", text, (int)strlen(text));
-		if (ok) {
-			ui_signal_tx();
-			_ch_preview_head = (_ch_preview_head + 1) % JOYSTICK_OFFLINE_QUEUE_SIZE;
-			ChannelMsgPreview &p = _ch_previews[_ch_preview_head];
-			strncpy(p.channel, ch.name, sizeof(p.channel) - 1);
-			p.channel[sizeof(p.channel) - 1] = '\0';
-			strncpy(p.text, text, sizeof(p.text) - 1);
-			p.text[sizeof(p.text) - 1] = '\0';
-			p.timestamp = ts;
-			p.path_len = OUT_PATH_SENT;
-			if (_ch_preview_count < JOYSTICK_OFFLINE_QUEUE_SIZE) _ch_preview_count++;
-			/* Notify BLE app so it can mirror the sent message in its UI. */
-			if (CompanionMesh *cm = static_cast<CompanionMesh *>(_mesh)) {
-				cm->queueLocalSentChannelMessage((uint8_t)_compose_channel_idx, ts, text);
-			}
-		}
-		return ok;
+		/* Pending-channel machinery handles broadcast, local preview, and
+		 * the deferred BLE-app mirror (queued only after the feedback
+		 * window decides heard / not-heard). */
+		return startPendingChannel((uint8_t)_compose_channel_idx, ch, ts, text);
 	}
 
 	return false;
@@ -1049,16 +1144,7 @@ bool JoystickUITask::sendChannelMessage(const char *text)
 	ChannelDetails ch;
 	if (!_mesh->getChannel(_compose_channel_idx, ch)) return false;
 	uint32_t ts = _rtc ? _rtc->getCurrentTimeUnique() : k_uptime_get_32();
-	bool ok = _mesh->sendGroupMessage(ts, ch.channel,
-			_prefs ? _prefs->node_name : "", text, (int)strlen(text));
-	if (ok) {
-		ui_signal_tx();
-		/* Notify BLE app so it can mirror the sent message in its UI. */
-		if (CompanionMesh *cm = static_cast<CompanionMesh *>(_mesh)) {
-			cm->queueLocalSentChannelMessage((uint8_t)_compose_channel_idx, ts, text);
-		}
-	}
-	return ok;
+	return startPendingChannel((uint8_t)_compose_channel_idx, ch, ts, text);
 }
 
 bool JoystickUITask::findContactByName(const char *name, ContactInfo &contact)

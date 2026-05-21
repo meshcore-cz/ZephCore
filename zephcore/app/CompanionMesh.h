@@ -203,10 +203,13 @@ public:
 
 	/**
 	 * Queue a locally-originated channel message into the BLE offline queue
-	 * and signal MSG_WAITING. See queueLocalSentContactMessage().
+	 * and signal MSG_WAITING. The body is rendered as
+	 * "<heard-marker> <node_name>: <text>" — heard_repeat picks
+	 * "(>>✓) " (at least one neighbor repeated the flood) vs "(>>✗) "
+	 * (no repeats heard within the joystick UI's feedback window).
 	 */
 	void queueLocalSentChannelMessage(uint8_t channel_idx, uint32_t timestamp,
-			const char *text);
+			const char *text, bool heard_repeat);
 
 	/* DataStoreHost interface */
 	bool onContactLoaded(const ContactInfo &c) override;

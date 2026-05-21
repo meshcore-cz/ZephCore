@@ -502,7 +502,7 @@ int BaseChatMesh::sendCommandData(const ContactInfo &recipient, uint32_t timesta
 }
 
 bool BaseChatMesh::sendGroupMessage(uint32_t timestamp, mesh::GroupChannel &channel,
-	const char *sender_name, const char *text, int text_len)
+	const char *sender_name, const char *text, int text_len, uint32_t *out_hash)
 {
 	uint8_t temp[5 + MAX_TEXT_LEN + 32];
 	memcpy(temp, &timestamp, 4);
@@ -518,6 +518,15 @@ bool BaseChatMesh::sendGroupMessage(uint32_t timestamp, mesh::GroupChannel &chan
 
 	mesh::Packet *pkt = createGroupDatagram(PAYLOAD_TYPE_GRP_TXT, channel, temp, 5 + prefix_len + text_len);
 	if (pkt) {
+		if (out_hash) {
+			/* Stash the FNV-1a hash for the caller and pre-register it with
+			 * the contention tracker so heard retransmits get counted. The
+			 * hash is content-only (payload_type + first 8 payload bytes),
+			 * unaffected by sendFlood's later path-hash bookkeeping. */
+			uint32_t h = mesh::ContentionTracker::computePacketHash32(pkt);
+			*out_hash = h;
+			getContentionTracker().trackRetransmit(h, (uint32_t)_ms->getMillis());
+		}
 		sendFloodScoped(channel, pkt);
 		return true;
 	}

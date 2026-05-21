@@ -26,6 +26,14 @@ public:
 	/* Returns true if packet matched a tracked retransmit (dupe recorded). */
 	bool recordDupeIfTracked(uint32_t hash32, uint32_t now_ms);
 
+	/* Capture the dupe count for the given hash and remove the entry from
+	 * active tracking (also folds the sample into the EMA exactly once,
+	 * same as natural finalization would have). Returns the dupe count, or
+	 * -1 if the entry isn't found (already finalized, or never tracked).
+	 * Used by the joystick UI to ask "did my channel send get repeated?"
+	 * a few seconds after sending. */
+	int extractDupeCount(uint32_t hash32);
+
 	/* Returns backoff_multiplier * airtime, clamped by remaining headroom.
 	 * Returns 0 when hard cap reached or backoff disabled. */
 	uint16_t getReactiveHeadroom(uint32_t hash32, uint32_t airtime_ms) const;

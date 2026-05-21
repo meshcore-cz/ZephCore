@@ -169,6 +169,14 @@ static inline void formatHopCount(uint8_t path_len, char *out, size_t out_len)
 		snprintf(out, out_len, "sent");
 		return;
 	}
+	if (path_len == OUT_PATH_SENT_HEARD) {
+		snprintf(out, out_len, "sent+");
+		return;
+	}
+	if (path_len == OUT_PATH_SENT_UNHEARD) {
+		snprintf(out, out_len, "sent?");
+		return;
+	}
 	int hops = (int)(path_len & 63);
 	if (hops <= 0) snprintf(out, out_len, "direct");
 	else snprintf(out, out_len, "%dh", hops);

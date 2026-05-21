@@ -99,6 +99,15 @@ bool ContentionTracker::recordDupeIfTracked(uint32_t hash32, uint32_t now_ms)
 	return true;
 }
 
+int ContentionTracker::extractDupeCount(uint32_t hash32)
+{
+	int idx = findEntry(hash32);
+	if (idx < 0) return -1;
+	int count = (int)_ring[idx].dupe_count;
+	finalizeEntry(idx);  /* folds into EMA, marks inactive */
+	return count;
+}
+
 uint16_t ContentionTracker::getReactiveHeadroom(uint32_t hash32, uint32_t airtime_ms) const
 {
 	int idx = findEntry(hash32);

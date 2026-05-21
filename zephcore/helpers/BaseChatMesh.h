@@ -171,8 +171,13 @@ public:
 		uint32_t &expected_ack, uint32_t &est_timeout);
 	int sendCommandData(const ContactInfo &recipient, uint32_t timestamp, uint8_t attempt, const char *text,
 		uint32_t &est_timeout);
+	/* @param out_hash if non-null, filled with the FNV-1a packet hash so the
+	 * caller can later query the contention tracker for "how many neighbors
+	 * heard and retransmitted this?" — used by the joystick UI's send-feedback
+	 * mechanism. When provided, the packet is also pre-registered with the
+	 * contention tracker (so heard dupes match). */
 	bool sendGroupMessage(uint32_t timestamp, mesh::GroupChannel &channel, const char *sender_name,
-		const char *text, int text_len);
+		const char *text, int text_len, uint32_t *out_hash = nullptr);
 	bool sendGroupData(mesh::GroupChannel &channel, uint8_t *path, uint8_t path_len,
 		uint16_t data_type, const uint8_t *data, int data_len);
 	int sendLogin(const ContactInfo &recipient, const char *password, uint32_t &est_timeout);
