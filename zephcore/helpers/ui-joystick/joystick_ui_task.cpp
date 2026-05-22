@@ -819,7 +819,6 @@ void JoystickUITask::loop()
 		_pending_render = true;
 	}
 
-do_render:
 	if (!_display.isOn() || !_curr) {
 		return;
 	}
