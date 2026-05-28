@@ -22,6 +22,7 @@ LOG_MODULE_REGISTER(zephcore_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 #include <adapters/clock/ZephyrRTCClock.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/drivers/hwinfo.h>
+#include <zephyr/sys/reboot.h>
 #include <ZephyrSensorManager.h>
 #include <helpers/time_sync.h>
 #include "ui_task.h"
@@ -55,7 +56,6 @@ LOG_MODULE_REGISTER(zephcore_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
  * This prints the file/line and reboots so we can actually see what happened.
  */
 #if IS_ENABLED(CONFIG_BT_CTLR_ASSERT_HANDLER)
-#include <zephyr/sys/reboot.h>
 extern "C" void bt_ctlr_assert_handle(char *file, uint32_t line)
 {
 	LOG_ERR("!!! BLE CONTROLLER ASSERT: %s:%u !!!", file ? file : "?", line);
@@ -78,6 +78,12 @@ extern "C" void bt_ctlr_assert_handle(char *file, uint32_t line)
 #define MESH_EVENT_GPS_ACTION    BIT(5)  /* GPS state change (must run on main thread!) */
 #define MESH_EVENT_TX_DRAIN      BIT(6)  /* Outbound packet delay expired, run checkSend */
 #define MESH_EVENT_PREFS_DIRTY   BIT(8)  /* Prefs mutated off-main; main flushes to flash */
+
+#ifdef ZEPHCORE_LORA
+/* Forward decl — data_store + companion_mesh_ptr statics are defined further
+ * down in the file, so mesh_event_loop() can't reference them directly. */
+static void save_prefs_to_flash(void);
+#endif
 #define MESH_EVENT_BASE          (MESH_EVENT_LORA_RX | MESH_EVENT_LORA_TX_DONE | \
 	MESH_EVENT_BLE_RX | MESH_EVENT_HOUSEKEEPING | MESH_EVENT_UI_ACTION |  \
 	MESH_EVENT_GPS_ACTION | MESH_EVENT_TX_DRAIN | MESH_EVENT_PREFS_DIRTY)
@@ -354,8 +360,8 @@ static void mesh_event_loop(void)
 		 * to flash here so the synchronous LittleFS write doesn't block
 		 * the originating thread.  Multiple posts coalesce into one
 		 * write of the latest _prefs values — desired behaviour. */
-		if (events & MESH_EVENT_PREFS_DIRTY) {
-			data_store.savePrefs(companion_mesh.prefs);
+		if ((events & MESH_EVENT_PREFS_DIRTY) && companion_mesh_ptr) {
+			save_prefs_to_flash();
 		}
 #endif
 
@@ -451,6 +457,14 @@ static mesh::SimpleMeshTables mesh_tables;
 static mesh::StaticPoolPacketManager packet_mgr;
 static CompanionMesh companion_mesh(lora_radio, ms_clock, zephyr_rng, rtc_clock,
 	packet_mgr, mesh_tables, data_store);
+
+/* Defined here (after data_store + companion_mesh_ptr statics) and
+ * forward-declared near the top of the file so mesh_event_loop() can
+ * call it without the static decls being in scope. */
+static void save_prefs_to_flash(void)
+{
+	data_store.savePrefs(companion_mesh_ptr->prefs);
+}
 #endif
 
 /* GPS enable callback - logs state changes
@@ -646,17 +660,51 @@ int main(void)
 		LOG_INF("Added default Public channel");
 	}
 
-	/* Load or generate identity */
+	/* Load or generate identity.
+	 *
+	 * First-boot keygen uses ZephyrRNG::mixIdentitySeed() — a layered
+	 * entropy mixer combining sys_csrand_get + HWINFO unique ID + ADC
+	 * LSB noise + CPU cycle-counter jitter, conditioned via SHA-512.
+	 * This compensates for ESP32's hardware TRNG being only seeded
+	 * after WiFi/BT radio init (identity gen happens before bt_enable). */
 	mesh::LocalIdentity self_identity;
 	if (!data_store.loadMainIdentity(self_identity)) {
-		self_identity = mesh::LocalIdentity(&zephyr_rng);
-		/* Ensure pub_key[0] is not reserved (0x00 or 0xFF in MeshCore protocol) */
-		int count = 0;
-		while (count < 10 && (self_identity.pub_key[0] == 0x00 || self_identity.pub_key[0] == 0xFF)) {
-			self_identity = mesh::LocalIdentity(&zephyr_rng);
-			count++;
+		/* Sample ADC LSB noise — best-effort independent physical
+		 * source. Boards without battery ADC return 0; jitter remains
+		 * the primary entropy source either way. */
+		uint8_t adc_noise[32] = {0};
+		for (size_t i = 0; i < sizeof(adc_noise); i++) {
+			adc_noise[i] = (uint8_t)zephyr_board.getBattMilliVolts();
+			k_msleep(1);
 		}
+
+		uint8_t seed[32];
+		mesh::ZephyrRNG::mixIdentitySeed(seed, sizeof(seed),
+						 adc_noise, sizeof(adc_noise));
+		{
+			mesh::SeededRNG seed_rng(seed, sizeof(seed));
+			self_identity = mesh::LocalIdentity(&seed_rng);
+		}
+
+		/* Ensure pub_key[0] is not reserved (0x00 or 0xFF in MeshCore protocol).
+		 * With a properly mixed seed this almost never triggers; the
+		 * cap+reboot is a safety net against pathological entropy failure. */
+		int attempt = 0;
+		while (self_identity.pub_key[0] == 0x00 || self_identity.pub_key[0] == 0xFF) {
+			if (++attempt > 100) {
+				LOG_ERR("Identity gen stuck on reserved prefix; rebooting");
+				k_msleep(2000);
+				sys_reboot(SYS_REBOOT_COLD);
+			}
+			mesh::ZephyrRNG::mixIdentitySeed(seed, sizeof(seed));
+			mesh::SeededRNG retry_rng(seed, sizeof(seed));
+			self_identity = mesh::LocalIdentity(&retry_rng);
+		}
+
 		data_store.saveMainIdentity(self_identity);
+
+		memset(seed, 0, sizeof(seed));
+		memset(adc_noise, 0, sizeof(adc_noise));
 	}
 	companion_mesh.self_id = self_identity;
 

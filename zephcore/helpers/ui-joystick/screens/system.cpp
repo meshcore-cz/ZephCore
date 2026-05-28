@@ -470,7 +470,9 @@ bool BLECodeScreen::handleInput(char c)
 	}
 
 	if (c == KEY_ENTER_LONG) {
-		uint32_t pin = 100000UL + (sys_rand32_get() % 900000UL);
+		uint32_t r;
+		sys_csrand_get(&r, sizeof(r));
+		uint32_t pin = 100000UL + (r % 900000UL);
 		NodePrefs *prefs = _task->getPrefs();
 		if (prefs) { prefs->ble_pin = pin; }
 		snprintf(_pin_buf, sizeof(_pin_buf), "%06lu", (unsigned long)pin);
