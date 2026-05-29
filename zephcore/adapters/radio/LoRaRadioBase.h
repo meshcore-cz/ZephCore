@@ -122,6 +122,10 @@ protected:
 	/* ── Shared helpers available to subclasses ────────────────── */
 
 	void buildModemConfig(struct lora_modem_config &cfg, bool tx);
+	/* Shared body for configureRx()/configureTx(): builds the modem config for
+	 * the given direction, honours the params-unchanged and direction-only
+	 * fast paths, then programs the radio via hwConfigure(). */
+	void configure(bool tx);
 	void configureRx();
 	void configureTx();
 	void startReceive();

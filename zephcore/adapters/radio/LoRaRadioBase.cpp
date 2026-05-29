@@ -280,35 +280,40 @@ static bool onlyDirectionDiffers(const struct lora_modem_config &a,
 	       a.tx != b.tx;
 }
 
-void LoRaRadioBase::configureRx()
+void LoRaRadioBase::configure(bool tx)
 {
 	struct lora_modem_config cfg;
-	buildModemConfig(cfg, false);
+	buildModemConfig(cfg, tx);
+
+	const char *who = tx ? "configureTx" : "configureRx";
 
 	if (_config_cached && configParamsEqual(cfg, _last_cfg)) {
-		LOG_DBG("configureRx: params unchanged, skipping hwConfigure");
+		LOG_DBG("%s: params unchanged, skipping hwConfigure", who);
 		return;
 	}
 
 	/* Fast path: if only the TX/RX direction changed, skip the full
 	 * hwConfigure → lora_config() call.  The driver already has a valid
-	 * RX config (RadioSetRxConfig) from a previous cycle — Radio.Rx(0)
-	 * in hwStartReceive() will use those register values directly.
-	 * This avoids the modem_acquire → modem_release → Radio.Sleep()
-	 * round-trip that wastes ~5 ms on every TX→RX transition.
+	 * config for the target direction (RadioSetRxConfig / RadioSetTxConfig
+	 * with TxTimeout=4000) from a previous cycle — Radio.Rx(0) / Radio.Send()
+	 * will use those register values directly.  This avoids the
+	 * modem_acquire → modem_release → Radio.Sleep() round-trip that wastes
+	 * ~5 ms on every TX↔RX transition.
 	 *
 	 * Not used for loramac-node: Radio.SetTxConfig() and Radio.SetRxConfig()
 	 * configure completely disjoint internal state (including TxTimeout).
 	 * Skipping either on a direction change leaves that state uninitialized. */
 	if (!_loramac_node && _config_cached && onlyDirectionDiffers(cfg, _last_cfg)) {
-		LOG_DBG("configureRx: direction-only change, skip hwConfigure");
+		LOG_DBG("%s: direction-only change, skip hwConfigure", who);
 		_last_cfg = cfg;
 		return;
 	}
 
-	LOG_DBG("configureRx: freq=%u bw=%d sf=%d cr=%d pwr=%d",
-		cfg.frequency, (int)cfg.bandwidth, (int)cfg.datarate,
-		(int)cfg.coding_rate, cfg.tx_power);
+	if (!tx) {
+		LOG_DBG("configureRx: freq=%u bw=%d sf=%d cr=%d pwr=%d",
+			cfg.frequency, (int)cfg.bandwidth, (int)cfg.datarate,
+			(int)cfg.coding_rate, cfg.tx_power);
+	}
 
 	if (hwConfigure(cfg)) {
 		_last_cfg = cfg;
@@ -318,33 +323,8 @@ void LoRaRadioBase::configureRx()
 	}
 }
 
-void LoRaRadioBase::configureTx()
-{
-	struct lora_modem_config cfg;
-	buildModemConfig(cfg, true);
-
-	if (_config_cached && configParamsEqual(cfg, _last_cfg)) {
-		LOG_DBG("configureTx: params unchanged, skipping hwConfigure");
-		return;
-	}
-
-	/* Fast path: direction-only change (RX→TX).  The driver already
-	 * has a valid TX config (RadioSetTxConfig with TxTimeout=4000)
-	 * from a previous cycle — Radio.Send() will use those values.
-	 * Not used for loramac-node (see configureRx comment above). */
-	if (!_loramac_node && _config_cached && onlyDirectionDiffers(cfg, _last_cfg)) {
-		LOG_DBG("configureTx: direction-only change, skip hwConfigure");
-		_last_cfg = cfg;
-		return;
-	}
-
-	if (hwConfigure(cfg)) {
-		_last_cfg = cfg;
-		_config_cached = true;
-	} else {
-		_config_cached = false;
-	}
-}
+void LoRaRadioBase::configureRx() { configure(false); }
+void LoRaRadioBase::configureTx() { configure(true); }
 
 /* ── Lifecycle ────────────────────────────────────────────────────────── */
 
