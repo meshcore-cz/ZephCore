@@ -37,19 +37,19 @@ if [[ $1 == "nrf" ]]; then
     for board in "${nRF_boards[@]}"; do
         board_clean_for_path=$(echo "$board" | sed -e 's/\//-/g')
         
-        # build nRF companions
+        # build nRF companions (production is the default — no extra conf needed)
         echo "Now building $board companion"
         if [[ $board == "wio_tracker_l1" ]]; then
-            west build -b "$board" zephcore --pristine -- -DEXTRA_CONF_FILE="boards/common/prod.conf" -DCONFIG_ZEPHCORE_EASTER_EGG_DOOM=y
+            west build -b "$board" zephcore --pristine -- -DCONFIG_ZEPHCORE_EASTER_EGG_DOOM=y
         else
-            west build -b "$board" zephcore --pristine -- -DEXTRA_CONF_FILE="boards/common/prod.conf"
+            west build -b "$board" zephcore --pristine
         fi
         mv build/zephyr/zephyr.uf2 firmware/"$board"-companion-"$COMMIT_HASH".uf2
         mv build/zephyr/zephyr.zip firmware/"$board"-companion-"$COMMIT_HASH".zip
-        
+
         # build nRF repeaters
         echo "Now building $board repeater"
-        west build -b "$board" zephcore --pristine -- -DEXTRA_CONF_FILE="boards/common/repeater.conf;boards/common/prod.conf"
+        west build -b "$board" zephcore --pristine -- -DEXTRA_CONF_FILE="boards/common/repeater.conf"
         mv build/zephyr/zephyr.uf2 firmware/"$board"-repeater-"$COMMIT_HASH".uf2
         mv build/zephyr/zephyr.zip firmware/"$board"-repeater-"$COMMIT_HASH".zip
 
@@ -58,12 +58,12 @@ if [[ $1 == "nrf" ]]; then
         # Heltec_t114_without_display_* PIO envs.
         if [[ $board == "heltec_t114" ]]; then
             echo "Now building $board companion (noscreen)"
-            west build -b "$board" zephcore --pristine -- -DEXTRA_CONF_FILE="boards/common/prod.conf;boards/nrf52840/heltec_t114/no_display.conf"
+            west build -b "$board" zephcore --pristine -- -DEXTRA_CONF_FILE="boards/nrf52840/heltec_t114/no_display.conf"
             mv build/zephyr/zephyr.uf2 firmware/"$board"-companion-noscreen-"$COMMIT_HASH".uf2
             mv build/zephyr/zephyr.zip firmware/"$board"-companion-noscreen-"$COMMIT_HASH".zip
 
             echo "Now building $board repeater (noscreen)"
-            west build -b "$board" zephcore --pristine -- -DEXTRA_CONF_FILE="boards/common/repeater.conf;boards/common/prod.conf;boards/nrf52840/heltec_t114/no_display.conf"
+            west build -b "$board" zephcore --pristine -- -DEXTRA_CONF_FILE="boards/common/repeater.conf;boards/nrf52840/heltec_t114/no_display.conf"
             mv build/zephyr/zephyr.uf2 firmware/"$board"-repeater-noscreen-"$COMMIT_HASH".uf2
             mv build/zephyr/zephyr.zip firmware/"$board"-repeater-noscreen-"$COMMIT_HASH".zip
         fi
@@ -82,9 +82,9 @@ if [[ $1 == "esp32" ]]; then
         fi
         
         if [[ $2 == "companions" ]]; then
-            # build ESP32 companions
+            # build ESP32 companions (production is the default)
             echo "Now building $board companion"
-            west build -b "$board" zephcore --pristine --sysbuild -- -DEXTRA_CONF_FILE="boards/common/prod.conf"
+            west build -b "$board" zephcore --pristine --sysbuild
             FLASH_SIZE=$(
                 python3 -c '
 import re
@@ -127,7 +127,7 @@ print(str(size // 1048576) + "MB")
         if [[ $2 == "repeaters" ]]; then
             # build ESP32 repeaters
             echo "Now building $board repeater"
-            west build -b "$board" zephcore --pristine --sysbuild -- -DEXTRA_CONF_FILE="boards/common/repeater.conf;boards/common/prod.conf"
+            west build -b "$board" zephcore --pristine --sysbuild -- -DEXTRA_CONF_FILE="boards/common/repeater.conf"
             FLASH_SIZE=$(
                 python3 -c '
 import re

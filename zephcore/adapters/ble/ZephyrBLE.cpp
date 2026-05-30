@@ -122,6 +122,44 @@ static int64_t ble_tx_start_time = 0;
 /* Active interface tracking */
 static enum zephcore_iface active_iface = ZEPHCORE_IFACE_NONE;
 
+/* active_iface is mutated from two threads — the Bluetooth callback thread
+ * (connect / security / pairing / disconnect) and the USB workqueue
+ * (CMD_APP_START / DTR drop).  This mutex makes the check-then-act claim and
+ * release sequences atomic so the two transports can never both believe they
+ * own the interface (or lose a write to it). */
+K_MUTEX_DEFINE(ble_iface_lock);
+
+/* Atomically claim the interface for `who` iff it is currently idle.
+ * Returns true only if this call performed the NONE -> who transition. */
+static bool iface_claim_if_idle(enum zephcore_iface who)
+{
+	k_mutex_lock(&ble_iface_lock, K_FOREVER);
+	bool claimed = (active_iface == ZEPHCORE_IFACE_NONE);
+	if (claimed) {
+		active_iface = who;
+	}
+	k_mutex_unlock(&ble_iface_lock);
+	return claimed;
+}
+
+/* Atomically release the interface if `who` currently owns it. */
+static void iface_release(enum zephcore_iface who)
+{
+	k_mutex_lock(&ble_iface_lock, K_FOREVER);
+	if (active_iface == who) {
+		active_iface = ZEPHCORE_IFACE_NONE;
+	}
+	k_mutex_unlock(&ble_iface_lock);
+}
+
+/* Claim the active interface for BLE, but only if nothing else owns it.
+ * First-come-first-served: a live USB session must not be evicted by BLE
+ * connecting/pairing in the background.  Returns true if BLE now owns it. */
+static bool ble_claim_iface_if_idle(void)
+{
+	return iface_claim_if_idle(ZEPHCORE_IFACE_BLE);
+}
+
 /* DLE tracking — set after successful DLE request to avoid double-request */
 static bool dle_requested;
 
@@ -298,6 +336,16 @@ static void connected(struct bt_conn *conn, uint8_t err)
 		return;
 	}
 	LOG_INF("connected: %s", addr);
+
+	/* Reject BLE connections while USB is the active transport.
+	 * The user connected via BLE expecting to exchange messages, but
+	 * USB owns the interface — they would get nothing and be confused. */
+	if (active_iface == ZEPHCORE_IFACE_USB) {
+		LOG_INF("connected: USB active — rejecting BLE connection from %s", addr);
+		bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+		return;
+	}
+
 	current_conn = bt_conn_ref(conn);
 
 	/* Zephyr stops advertising internally when the conn slot is consumed
@@ -349,9 +397,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	conn_params_pending = false;
 
 	/* Clear interface state if BLE was active */
-	if (active_iface == ZEPHCORE_IFACE_BLE) {
-		active_iface = ZEPHCORE_IFACE_NONE;
-	}
+	iface_release(ZEPHCORE_IFACE_BLE);
 
 	/* Clear queues, retry state, and congestion */
 	k_msgq_purge(&ble_send_queue);
@@ -397,7 +443,7 @@ static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_
 	if (level >= BT_SECURITY_L2 && !ble_tx_ready) {
 		LOG_INF("security established, enabling TX");
 		ble_tx_ready = true;
-		active_iface = ZEPHCORE_IFACE_BLE;
+		ble_claim_iface_if_idle();
 
 		/* If CCC was already subscribed (bonded reconnect — phone writes
 		 * CCC before security_changed fires), kick TX now.  On fresh
@@ -532,14 +578,12 @@ static void pairing_complete(struct bt_conn *conn, bool bonded)
 	ARG_UNUSED(conn);
 	LOG_INF("pairing complete: bonded=%d", bonded);
 
-	/* Switch to BLE interface (fresh pairing only).
-	 * Conn params and TX enable are handled in security_changed(),
-	 * which fires for both fresh pairing and bonded reconnects. */
-	if (active_iface == ZEPHCORE_IFACE_USB) {
-		LOG_INF("switching from USB to BLE");
-		/* Main handles USB state clearing via on_connected callback */
+	if (ble_claim_iface_if_idle()) {
+		LOG_INF("pairing complete, activating BLE interface");
+	} else {
+		LOG_INF("pairing complete, %s already active — BLE paired but not promoted",
+			active_iface == ZEPHCORE_IFACE_USB ? "USB" : "BLE");
 	}
-	active_iface = ZEPHCORE_IFACE_BLE;
 }
 
 static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
@@ -985,12 +1029,28 @@ uint32_t zephcore_ble_get_passkey(void)
 
 enum zephcore_iface zephcore_ble_get_active_iface(void)
 {
-	return active_iface;
+	k_mutex_lock(&ble_iface_lock, K_FOREVER);
+	enum zephcore_iface iface = active_iface;
+	k_mutex_unlock(&ble_iface_lock);
+	return iface;
 }
 
 void zephcore_ble_set_active_iface(enum zephcore_iface iface)
 {
+	k_mutex_lock(&ble_iface_lock, K_FOREVER);
 	active_iface = iface;
+	k_mutex_unlock(&ble_iface_lock);
+}
+
+bool zephcore_ble_iface_try_claim(enum zephcore_iface who)
+{
+	k_mutex_lock(&ble_iface_lock, K_FOREVER);
+	bool ok = (active_iface == ZEPHCORE_IFACE_NONE || active_iface == who);
+	if (ok) {
+		active_iface = who;
+	}
+	k_mutex_unlock(&ble_iface_lock);
+	return ok;
 }
 
 struct k_msgq *zephcore_ble_get_recv_queue(void)

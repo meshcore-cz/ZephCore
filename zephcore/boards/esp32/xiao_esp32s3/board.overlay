@@ -86,3 +86,8 @@
 
 /* LittleFS auto-mount — standard /lfs mount point */
 #include "../../common/filesystem.dtsi"
+
+/* USB OTG companion transport. Consoles over USB Serial/JTAG (shares D+/D-
+ * with USB OTG), so the console is rerouted to uart0. */
+#include "../../common/esp32s3_console_uart0.dtsi"
+#include "../../common/esp32s3_usb_otg.dtsi"

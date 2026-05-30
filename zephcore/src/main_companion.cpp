@@ -34,7 +34,13 @@ LOG_MODULE_REGISTER(zephcore_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 
 #include <ZephyrBLE.h>
 
-#if IS_ENABLED(CONFIG_LOG)
+/* The USB CDC companion stack is compiled when either logging needs the CDC
+ * console (debug builds) or the binary companion transport is explicitly
+ * enabled (CONFIG_ZEPHCORE_COMPANION_USB, default-y on USB-capable boards). */
+#define ZEPHCORE_USB_STACK \
+	(IS_ENABLED(CONFIG_LOG) || IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_USB))
+
+#if ZEPHCORE_USB_STACK
 #include <ZephyrCompanionUSB.h>
 #include <ZephyrUSBCDC.h>
 #endif
@@ -181,7 +187,7 @@ static void ble_on_connected(void)
 /* BLE disconnected callback — clean up state and notify UI */
 static void ble_on_disconnected(void)
 {
-#if IS_ENABLED(CONFIG_LOG)
+#if ZEPHCORE_USB_STACK
 	zephcore_usb_companion_reset_rx();
 #endif
 #ifdef ZEPHCORE_LORA
@@ -562,8 +568,8 @@ int main(void)
 	/* USB CDC init up front so the host can enumerate, then block until the
 	 * host opens the port (DTR-high) — event-driven via the shared usbd
 	 * message callback.  Unplugged → 1 s timeout, banner is buffered for any
-	 * later attach.  CONFIG_LOG=n prod builds skip the whole stack. */
-#if IS_ENABLED(CONFIG_LOG) && DT_HAS_COMPAT_STATUS_OKAY(zephyr_cdc_acm_uart) && \
+	 * later attach. */
+#if ZEPHCORE_USB_STACK && DT_HAS_COMPAT_STATUS_OKAY(zephyr_cdc_acm_uart) && \
 	!IS_ENABLED(CONFIG_CDC_ACM_SERIAL_INITIALIZE_AT_BOOT)
 	zephcore_usbd_init();
 	zephcore_usbd_wait_dtr(1000);
@@ -780,10 +786,11 @@ int main(void)
 	zephcore_ble_init(&ble_cbs);
 
 	/*
-	 * USB CDC ACM - only enabled when logging is enabled (debug builds).
-	 * Production builds (CONFIG_LOG=n) skip USB entirely, saving ~2-5mA.
+	 * USB CDC ACM companion transport.
+	 * Enabled when logging is on (debug builds) OR when explicitly requested
+	 * via CONFIG_ZEPHCORE_COMPANION_USB (e.g. prod builds on USB-capable boards).
 	 */
-#if IS_ENABLED(CONFIG_LOG)
+#if ZEPHCORE_USB_STACK
 	zephcore_usb_companion_init(&mesh_events, &rx_process_work, MESH_EVENT_BLE_RX,
 				   &zephyr_board);
 #endif

@@ -115,13 +115,17 @@ static void usb_rx_work_fn(struct k_work *work)
 				 * is actually CMD_SEND_CHANNEL_TXT_MSG and meant the USB
 				 * handshake silently dropped the app's first frame.) */
 				if (payload_len >= 1 && payload[0] == 0x01 /* CMD_APP_START */) {
-					if (zephcore_ble_get_active_iface() == ZEPHCORE_IFACE_BLE &&
-					    zephcore_ble_is_connected()) {
-						LOG_INF("usb_rx: CMD_APP_START, disconnecting BLE");
-						zephcore_ble_disconnect();
+					/* Atomically claim the interface for USB unless BLE
+					 * already owns it.  try_claim succeeds when idle or
+					 * already USB (reconnect) and fails only while a BLE
+					 * session is live, so USB can't steal it — and the
+					 * compare-and-set can't race a concurrent BLE claim. */
+					if (zephcore_ble_iface_try_claim(ZEPHCORE_IFACE_USB)) {
+						zephcore_ble_set_enabled(false);
+						LOG_INF("usb_rx: CMD_APP_START → IFACE_USB");
+					} else {
+						LOG_INF("usb_rx: CMD_APP_START ignored, BLE is active");
 					}
-					zephcore_ble_set_active_iface(ZEPHCORE_IFACE_USB);
-					LOG_INF("usb_rx: active_iface = IFACE_USB");
 				}
 
 				/* Only process if USB is active interface */
@@ -155,9 +159,21 @@ static void on_dtr_change(bool dtr_active)
 		return;
 	}
 	LOG_INF("usb_dtr: DTR dropped, USB disconnected");
+	/* While USB owns the interface, BLE claims are rejected (see connected()),
+	 * so this thread is the only writer of active_iface here — the get/set
+	 * pair below needs no extra locking beyond the thread-safe accessors. */
 	if (zephcore_ble_get_active_iface() == ZEPHCORE_IFACE_USB) {
-		zephcore_ble_set_active_iface(ZEPHCORE_IFACE_NONE);
-		LOG_INF("usb_dtr: active_iface = IFACE_NONE");
+		if (zephcore_ble_is_connected()) {
+			/* BLE client is physically connected — hand off to it. */
+			zephcore_ble_set_active_iface(ZEPHCORE_IFACE_BLE);
+			LOG_INF("usb_dtr: → IFACE_BLE (BLE was connected)");
+		} else {
+			/* Nobody connected — go idle and restart advertising
+			 * so the phone can find the companion again. */
+			zephcore_ble_set_active_iface(ZEPHCORE_IFACE_NONE);
+			zephcore_ble_set_enabled(true);
+			LOG_INF("usb_dtr: → IFACE_NONE, BLE advertising restarted");
+		}
 	}
 	ring_buf_reset(&usb_ring_buf);
 	usb_frame_len = 0;

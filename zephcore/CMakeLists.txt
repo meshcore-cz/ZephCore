@@ -306,17 +306,7 @@ if(ZEPHCORE_BOARD_CONF AND EXISTS ${ZEPHCORE_BOARD_CONF})
     zephcore_auto_pair_overlay("${ZEPHCORE_BOARD_CONF}")
 endif()
 
-# Include logging tuning only for debug builds (when prod.conf is NOT active).
-# This avoids Kconfig warnings from log settings that depend on CONFIG_LOG.
-set(ZEPHCORE_LOGGING_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/logging.conf")
-if(EXTRA_CONF_FILE MATCHES "prod\\.conf")
-    message(STATUS "  Production build — skipping logging.conf")
-else()
-    if(EXISTS ${ZEPHCORE_LOGGING_CONF})
-        list(APPEND ZEPHCORE_CONF_FILES ${ZEPHCORE_LOGGING_CONF})
-        zephcore_auto_pair_overlay("${ZEPHCORE_LOGGING_CONF}")
-    endif()
-endif()
+# Production is the default. Debug logging is opt-in via debug.conf.
 
 # Auto-include WiFi OTA for ESP32 repeater builds.
 # Enables WiFi AP + HTTP server + MCUboot image management.

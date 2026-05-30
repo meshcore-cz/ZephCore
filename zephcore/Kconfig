@@ -66,6 +66,27 @@ config ZEPHCORE_ROLE_COMPANION
 	  BLE companion device that connects to ZephCore mobile app.
 	  Includes BLE stack, contact management, offline queue, channels.
 
+config ZEPHCORE_COMPANION_USB
+	bool "Enable USB CDC companion transport"
+	depends on USB_DEVICE_STACK_NEXT
+	default y if ZEPHCORE_ROLE_COMPANION
+	help
+	  Compile and init the USB CDC-ACM companion protocol stack
+	  (ZephyrCompanionUSB / ZephyrUSBCDC) independently of CONFIG_LOG.
+	  The full ~60-opcode binary protocol is available over USB even in
+	  production builds (CONFIG_LOG=n).  USB and BLE arbitrate the active
+	  interface first-come-first-served: CMD_APP_START claims it for USB only
+	  if no BLE session is already active (and is ignored while BLE is live);
+	  on USB unplug the interface is handed back to BLE or released to idle.
+
+	  Enabled by default for all companion builds on platforms that already
+	  have CONFIG_USB_DEVICE_STACK_NEXT=y (all nRF52840 boards).  On
+	  platforms without USB hardware (MG24, ESP32 classic, C3/C6) the
+	  depends forces this to n automatically — no conf change needed.
+
+	  For ESP32-S3 boards, USB_DEVICE_STACK_NEXT must be enabled first via
+	  boards/common/esp32s3_usb.conf before this becomes active.
+
 config ZEPHCORE_ROLE_REPEATER
 	bool "Repeater"
 	help

@@ -511,11 +511,11 @@ Wolf3D-style raycaster on OLED: textured walls, 2 enemy types, shooting, HUD. By
 ### 9.1 Config Layering
 
 ```
-prj.conf (base: console, logging)
+prj.conf (base: console; production defaults — LOG=n, ASSERT=n)
   → boards/common/zephcore_common.conf (ALL boards: BLE, crypto, FS, LoRa, sensors)
     → boards/common/<platform>_common.conf (nrf52/esp32/nrf54l/mg24 specifics)
       → boards/<mcu>/<board>/board.conf (board-specific pins, features)
-        → [optional] repeater.conf, prod.conf (user extras, LAST = highest priority)
+        → [optional] repeater.conf, debug.conf (user extras, LAST = highest priority)
 ```
 
 ### 9.2 Key Kconfig Choices

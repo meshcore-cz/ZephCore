@@ -65,9 +65,16 @@ bool zephcore_ble_is_advertising(void);
 void zephcore_ble_set_passkey(uint32_t passkey);
 uint32_t zephcore_ble_get_passkey(void);
 
-/** Get/set active interface (BLE/USB coexistence). */
+/** Get/set active interface (BLE/USB coexistence). Both are thread-safe —
+ *  active_iface is mutated from the BLE callback thread and the USB workqueue. */
 enum zephcore_iface zephcore_ble_get_active_iface(void);
 void zephcore_ble_set_active_iface(enum zephcore_iface iface);
+
+/** Atomically claim the active interface for `who` unless the other transport
+ *  already owns it. Succeeds (returns true) if the interface is idle or already
+ *  held by `who`; fails if a different interface is active. Thread-safe — use
+ *  this instead of a get-then-set sequence to avoid a check-then-act race. */
+bool zephcore_ble_iface_try_claim(enum zephcore_iface who);
 
 /** Get recv/send queues for USB path sharing. */
 struct k_msgq *zephcore_ble_get_recv_queue(void);

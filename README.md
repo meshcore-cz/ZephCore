@@ -73,20 +73,20 @@ cd <cloned folder>
 west init -l zephcore
 west update
 
-# Companion (with logging)
+# Companion (production — default, no extra conf needed)
 west build -b wio_tracker_l1 zephcore --pristine
 
-# Companion (production, no logging, no USB)
+# Companion (debug logging)
 west build -b wio_tracker_l1 zephcore --pristine -- \
-  -DEXTRA_CONF_FILE="boards/common/prod.conf"
+  -DEXTRA_CONF_FILE="boards/common/debug.conf"
 
-# Repeater (with logging)
+# Repeater
 west build -b rak4631 zephcore --pristine -- \
   -DEXTRA_CONF_FILE="boards/common/repeater.conf"
 
-# Repeater (production)
+# Repeater (debug logging)
 west build -b rak4631 zephcore --pristine -- \
-  -DEXTRA_CONF_FILE="boards/common/repeater.conf;boards/common/prod.conf"
+  -DEXTRA_CONF_FILE="boards/common/repeater.conf;boards/common/debug.conf"
 
 # Repeater with packet logging (clean RAW/RX/TX lines only, no debug spam)
 west build -b rak4631 zephcore --pristine -- \
@@ -175,7 +175,7 @@ The old `txdelay`, `rxdelay`, and `direct.txdelay` commands are still accepted f
 
 - **LoRa RX duty cycle**: CAD-based receive windowing reduces LoRa RX current from ~10-15mA to ~3-5mA. Auto-enabled for SX1262 companion and repeater builds (toggleable at runtime via `set rxduty on/off`). Disabled for LR1110 (mid-preamble lock issue) and SX127x.
 - **Adaptive Power Control (APC)**: compiled in by default but disabled at runtime. Enable per-node with `set tx apc` -- automatically reduces TX power when echo SNR shows excess margin, ramping back up if echoes drop. See [apc.md](zephcore/apc.md).
-- **USB disabled in production**: Saves ~2-5mA and 62KB flash when logging is off
+- **Production by default**: No logging, no asserts, reboot-on-fatal. Add `debug.conf` to enable logging.
 - **GPIO-gated GPS**: Powered on only during fix acquisition
 
 ## Configuration
