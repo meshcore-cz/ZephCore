@@ -6,7 +6,6 @@
 #include "CompanionMesh.h"
 #include <mesh/Utils.h>
 #include <helpers/TxtDataHelpers.h>
-#include <ed_25519.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>

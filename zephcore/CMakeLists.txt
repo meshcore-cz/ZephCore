@@ -383,15 +383,15 @@ project(zephcore)
 string(TIMESTAMP ZEPHCORE_BUILD_DATE "%Y %b %d" UTC)
 add_definitions(-DFIRMWARE_BUILD_DATE="${ZEPHCORE_BUILD_DATE}")
 
-add_subdirectory(lib/ed25519)
-target_link_libraries(app PRIVATE ed25519)
+add_subdirectory(lib/monocypher)
+target_link_libraries(app PRIVATE monocypher)
 
 target_include_directories(app PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/helpers
   ${CMAKE_CURRENT_SOURCE_DIR}/app
-  ${CMAKE_CURRENT_SOURCE_DIR}/lib/ed25519
+  ${CMAKE_CURRENT_SOURCE_DIR}/lib/monocypher
   ${CMAKE_CURRENT_SOURCE_DIR}/adapters/board
   ${CMAKE_CURRENT_SOURCE_DIR}/adapters/clock
   ${CMAKE_CURRENT_SOURCE_DIR}/adapters/datastore
