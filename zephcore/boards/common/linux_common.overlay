@@ -24,6 +24,24 @@
 	status = "disabled";
 };
 
+/* LittleFS on native_sim's simulated flash.
+ * The native_sim board DTS allocates the first 1MB (0x0..0xfffff) for
+ * MCUBoot + OTA slots. The second half (0x100000..0x1fffff = 1MB) is unused.
+ * Use 512KB of it for LittleFS — 128 × 4KB blocks, plenty for identity,
+ * prefs, contacts, and channels.
+ * The sim-flash is in-memory (lost on exit); add
+ * CONFIG_FLASH_SIMULATOR_STATS_FILE for file-backed persistence. */
+&flash0 {
+	partitions {
+		lfs_partition: partition@100000 {
+			label = "lfs";
+			reg = <0x00100000 0x00080000>; /* 512 KB */
+		};
+	};
+};
+
+#include "filesystem.dtsi"
+
 /* Disable the SDL emulated display + touch (we don't use them and the
  * SDL2 dev library isn't a useful dep on a headless SBC). */
 &sdl_dc {
@@ -91,7 +109,7 @@
 			rx-enable-gpios = <&zephcore_gpio0 24 GPIO_ACTIVE_HIGH>;
 			dio2-tx-enable;
 			dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
-			tcxo-power-startup-delay-ms = <5>;
+			tcxo-power-startup-delay-ms = <10>;
 		};
 	};
 };

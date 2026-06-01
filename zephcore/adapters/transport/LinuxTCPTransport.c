@@ -3,15 +3,22 @@
  * ZephCore TCP companion transport — drop-in replacement for ZephyrBLE.
  *
  * Implements the exact zephcore_ble_* C API from adapters/ble/ZephyrBLE.h
- * over a TCP socket. Matches the wire format used by upstream MeshCore's
- * Linux companion service (port 5000 by default): each frame is prefixed
- * by a 2-byte big-endian length, followed by the raw NUS payload.
+ * over a TCP socket.
+ *
+ * Wire format: MeshCore SerialWifiInterface framing (ESP32 Arduino reference
+ * implementation: src/helpers/esp32/SerialWifiInterface.cpp):
+ *
+ *   App → Node:  [ '<' (0x3C) | length_LSB | length_MSB | payload... ]
+ *   Node → App:  [ '>' (0x3E) | length_LSB | length_MSB | payload... ]
+ *
+ * 3-byte header: 1-byte direction marker + 2-byte LE payload length.
+ * Frames with type != '<' are silently skipped (matches Arduino behavior).
  *
  * A single client at a time is supported (one BT_MAX_CONN=1 analogue).
  *
  * Architecture:
- *   - Listen thread accepts a client, then loops reading framed packets
- *     and posting them to ble_recv_queue + firing on_rx_frame.
+ *   - Listen thread accepts a client, then loops reading frames and
+ *     firing on_rx_frame (which queues to ble_recv_queue via the callback).
  *   - TX is a work-queue item driven by zephcore_ble_kick_tx(), draining
  *     ble_send_queue with zsock_send() until empty or the socket dies.
  *
@@ -131,7 +138,6 @@ static void tx_drain_work_fn(struct k_work *work)
 	ARG_UNUSED(work);
 
 	struct frame f;
-	uint8_t hdr[2];
 
 	while (k_msgq_get(&ble_send_queue, &f, K_NO_WAIT) == 0) {
 		k_mutex_lock(&sock_mu, K_FOREVER);
@@ -144,10 +150,14 @@ static void tx_drain_work_fn(struct k_work *work)
 			continue;
 		}
 
-		hdr[0] = (uint8_t)(f.len >> 8);
-		hdr[1] = (uint8_t)(f.len & 0xff);
+		/* SerialWifiInterface framing: '>' + length LE + payload */
+		uint8_t hdr[3];
 
-		int err = sock_send_all(fd, hdr, 2);
+		hdr[0] = '>';
+		hdr[1] = (uint8_t)(f.len & 0xFF);
+		hdr[2] = (uint8_t)(f.len >> 8);
+
+		int err = sock_send_all(fd, hdr, 3);
 
 		if (err == 0) {
 			err = sock_send_all(fd, f.buf, f.len);
@@ -243,19 +253,30 @@ static void listen_thread_fn(void *a, void *b, void *c)
 			transport_cbs->on_connected();
 		}
 
-		/* RX loop on this client until it disconnects. */
+		/* RX loop: SerialWifiInterface framing.
+		 * Each frame: ['<':1][length:2LE][payload].
+		 * Frames with type != '<' are skipped (matches Arduino). */
 		while (true) {
-			uint8_t hdr[2];
-			int err = sock_recv_all(fd, hdr, 2);
+			uint8_t hdr[3];
+			int err = sock_recv_all(fd, hdr, 3);
 
 			if (err != 0) {
 				break;
 			}
-			uint16_t flen = ((uint16_t)hdr[0] << 8) | hdr[1];
 
-			if (flen == 0 || flen > MAX_FRAME_SIZE) {
-				LOG_WRN("Invalid frame length %u, closing", flen);
-				break;
+			uint16_t flen = (uint16_t)hdr[1] | ((uint16_t)hdr[2] << 8);
+
+			/* Skip frames not from app ('<'), or bad length. */
+			if (hdr[0] != '<' || flen == 0 || flen > MAX_FRAME_SIZE) {
+				/* Drain and discard the payload. */
+				for (uint16_t i = 0; i < flen && flen <= MAX_FRAME_SIZE; i++) {
+					uint8_t discard;
+					if (sock_recv_all(fd, &discard, 1) != 0) {
+						goto client_done;
+					}
+				}
+				LOG_WRN("Skipping frame: type=0x%02x len=%u", hdr[0], flen);
+				continue;
 			}
 
 			struct frame f;
@@ -266,15 +287,15 @@ static void listen_thread_fn(void *a, void *b, void *c)
 				break;
 			}
 
-			if (k_msgq_put(&ble_recv_queue, &f, K_NO_WAIT) != 0) {
-				LOG_WRN("RX queue full, dropping frame");
-				continue;
-			}
-
+			/* Do NOT k_msgq_put here — ble_on_rx_frame() in
+			 * main_companion.cpp handles queueing, matching the
+			 * ZephyrBLE.cpp pattern (secure_nus_rx_write just calls
+			 * on_rx_frame without touching the recv queue). */
 			if (transport_cbs && transport_cbs->on_rx_frame) {
 				transport_cbs->on_rx_frame(f.buf, f.len);
 			}
 		}
+		client_done:
 
 		k_mutex_lock(&sock_mu, K_FOREVER);
 		close_client_locked();

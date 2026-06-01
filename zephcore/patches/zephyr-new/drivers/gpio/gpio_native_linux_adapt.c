@@ -105,9 +105,12 @@ gnl_line_t gnl_request_output(gnl_chip_t chip, unsigned int offset,
 	int chip_fd = (int)(intptr_t)chip;
 	uint64_t flags = GPIO_V2_LINE_FLAG_OUTPUT;
 
-	if (active_low) {
-		flags |= GPIO_V2_LINE_FLAG_ACTIVE_LOW;
-	}
+	/* Do NOT apply ACTIVE_LOW at the kernel level: Zephyr's generic GPIO
+	 * layer already converts logical<->physical for GPIO_ACTIVE_LOW (and
+	 * hands us a physical init value + raw set/get).  Inverting again here
+	 * double-inverts active-low pins (e.g. SX126x RESET), holding the chip
+	 * in reset.  The driver's port_*_raw contract is physical/raw. */
+	(void)active_low;
 
 	struct gnl_line_handle *h = do_request(chip_fd, offset, flags);
 
@@ -130,16 +133,19 @@ static uint64_t input_flags(bool pull_up, bool pull_down, bool active_low)
 {
 	uint64_t flags = GPIO_V2_LINE_FLAG_INPUT;
 
-	if (active_low) {
-		flags |= GPIO_V2_LINE_FLAG_ACTIVE_LOW;
-	}
+	/* See gnl_request_output: Zephyr's generic layer owns ACTIVE_LOW
+	 * inversion; applying it here too would double-invert. */
+	(void)active_low;
 	if (pull_up) {
 		flags |= GPIO_V2_LINE_FLAG_BIAS_PULL_UP;
 	} else if (pull_down) {
 		flags |= GPIO_V2_LINE_FLAG_BIAS_PULL_DOWN;
-	} else {
-		flags |= GPIO_V2_LINE_FLAG_BIAS_DISABLED;
 	}
+	/* else: leave bias AS-IS (no flag).  Forcing BIAS_DISABLED can turn off
+	 * the pin's input path on some SoCs (e.g. Rockchip), making a
+	 * push-pull-driven input (SX126x BUSY) read stuck-low.  libgpiod
+	 * defaults to AS-IS, which is what meshtasticd uses to read these pins
+	 * correctly. */
 	return flags;
 }
 
@@ -203,7 +209,9 @@ int gnl_line_get_value(gnl_line_t line)
 	memset(&vals, 0, sizeof(vals));
 	vals.mask = 1ULL;
 
-	if (ioctl(h->line_fd, GPIO_V2_LINE_GET_VALUES_IOCTL, &vals) < 0) {
+	int rc = ioctl(h->line_fd, GPIO_V2_LINE_GET_VALUES_IOCTL, &vals);
+
+	if (rc < 0) {
 		return -errno;
 	}
 	return (vals.bits & 1ULL) ? 1 : 0;
@@ -223,7 +231,29 @@ int gnl_line_set_value(gnl_line_t line, int value)
 	vals.mask = 1ULL;
 	vals.bits = value ? 1ULL : 0ULL;
 
-	if (ioctl(h->line_fd, GPIO_V2_LINE_SET_VALUES_IOCTL, &vals) < 0) {
+	int rc = ioctl(h->line_fd, GPIO_V2_LINE_SET_VALUES_IOCTL, &vals);
+
+	/* DIAGNOSTIC (temporary): confirm output writes reach the kernel and
+	 * read the line back immediately to see if the drive physically took. */
+	{
+		static int dbgn;
+
+		if (dbgn < 40) {
+			dbgn++;
+			struct gpio_v2_line_values rb;
+
+			memset(&rb, 0, sizeof(rb));
+			rb.mask = 1ULL;
+			int grc = ioctl(h->line_fd, GPIO_V2_LINE_GET_VALUES_IOCTL, &rb);
+
+			fprintf(stderr,
+				"GNL set_value: off=%u fd=%d val=%d set_rc=%d errno=%d readback=%d (grc=%d)\n",
+				h->offset, h->line_fd, value, rc, rc < 0 ? errno : 0,
+				(grc == 0) ? (int)(rb.bits & 1ULL) : -1, grc);
+		}
+	}
+
+	if (rc < 0) {
 		return -errno;
 	}
 	return 0;

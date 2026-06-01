@@ -62,8 +62,12 @@ struct gpio_native_linux_data {
 	struct k_mutex mu;
 
 	struct k_thread evt_thread;
-	K_KERNEL_STACK_MEMBER(evt_thread_stack,
-			      CONFIG_ARCH_POSIX_RECOMMENDED_STACK_SIZE);
+	/* K_THREAD_STACK_MEMBER expands to a section attribute that is only
+	 * valid at file scope — illegal inside a struct on native_sim.
+	 * K_KERNEL_STACK_MEMBER is struct-safe. Use a literal 2048 rather
+	 * than CONFIG_ARCH_POSIX_RECOMMENDED_STACK_SIZE, which evaluates to
+	 * 24 bytes on a cross-compiled native_sim ARM build. */
+	K_KERNEL_STACK_MEMBER(evt_thread_stack, 2048);
 	bool evt_thread_started;
 	struct k_sem reconfig_sem;
 	const struct device *self;
@@ -96,7 +100,11 @@ static int rebuild_line(const struct device *dev, gpio_pin_t pin)
 
 	gpio_flags_t f = p->cfg_flags;
 
-	if ((f & GPIO_DISCONNECTED) == GPIO_DISCONNECTED) {
+	/* "Disconnected" means neither INPUT nor OUTPUT is requested.  Note
+	 * GPIO_DISCONNECTED is 0, so the naive test (f & GPIO_DISCONNECTED)
+	 * is always true and would skip requesting EVERY line -- mask the
+	 * direction bits explicitly instead. */
+	if ((f & (GPIO_INPUT | GPIO_OUTPUT)) == GPIO_DISCONNECTED) {
 		return 0;
 	}
 
@@ -159,6 +167,9 @@ static int gnl_pin_configure(const struct device *dev, gpio_pin_t pin,
 	k_mutex_lock(&data->mu, K_FOREVER);
 	data->pins[pin].cfg_flags = flags;
 	ret = rebuild_line(dev, pin);
+	LOG_WRN("pin_configure: dev=%p data=%p pin=%u flags=0x%x ret=%d requested=%d",
+		(void *)dev, (void *)data, pin, flags, ret,
+		data->pins[pin].requested);
 	k_mutex_unlock(&data->mu);
 
 	/* Wake the event thread to re-collect fds. */
@@ -173,6 +184,9 @@ static int gnl_port_get_raw(const struct device *dev, gpio_port_value_t *value)
 	struct gpio_native_linux_data *data = dev->data;
 	gpio_port_value_t v = 0;
 
+	static int dbgn;
+	bool dbg = dbgn < 20;
+
 	k_mutex_lock(&data->mu, K_FOREVER);
 	for (uint32_t i = 0; i < cfg->ngpios && i < GNL_MAX_PINS; i++) {
 		struct gnl_pin_state *p = &data->pins[i];
@@ -182,11 +196,20 @@ static int gnl_port_get_raw(const struct device *dev, gpio_port_value_t *value)
 		}
 		int x = gnl_line_get_value(p->line);
 
+		if (dbg) {
+			LOG_WRN("port_get_raw: pin %u requested, value=%d", i, x);
+		}
 		if (x > 0) {
 			v |= ((gpio_port_value_t)1U << i);
 		}
 	}
 	k_mutex_unlock(&data->mu);
+
+	if (dbg) {
+		LOG_WRN("port_get_raw: dev=%p data=%p portval=0x%08x",
+			(void *)dev, (void *)data, (uint32_t)v);
+		dbgn++;
+	}
 
 	*value = v;
 	return 0;
@@ -344,23 +367,30 @@ static void gnl_evt_thread(void *arg1, void *arg2, void *arg3)
 		k_mutex_unlock(&data->mu);
 
 		if (nfds == 0) {
-			/* No edge-enabled pins: sleep waiting for reconfig. */
-			(void)k_sem_take(&data->reconfig_sem, K_MSEC(1000));
-			/* Drain any extra gives during the sleep. */
+			/* No edge-enabled pins: sleep properly so the Zephyr CPU
+			 * is released (unlike blocking poll which holds it). */
+			k_sleep(K_MSEC(10));
 			while (k_sem_take(&data->reconfig_sem, K_NO_WAIT) == 0) {
 			}
 			continue;
 		}
 
-		/* Poll with 200 ms cap so reconfig_sem wakeups stay responsive. */
-		uint32_t ready_mask = gnl_poll_fds(fds, nfds, 200);
+		/* Non-blocking poll: check for events instantly without holding
+		 * the Zephyr CPU mutex (a blocking poll blocks ALL Zephyr threads
+		 * for its duration, starving the SX126x work queue and causing
+		 * CAD/TX-DONE timeouts).
+		 *
+		 * Then k_sleep(1ms): properly releases the Zephyr CPU to any
+		 * thread (unlike k_yield which only yields to same-priority).
+		 * During the 1ms, the SX126x work queue processes the IRQ and
+		 * signals cad_sem/tx_done. GPIO event latency ≤ 1ms — well
+		 * within the 200ms CAD and TX_DONE timeout budgets.
+		 *
+		 * TODO: replace with NSI interrupt model for true zero latency. */
+		uint32_t ready_mask = gnl_poll_fds(fds, nfds, 0);
 
-		/* Process any reconfig requests first (cheap). */
+		/* Drain reconfig requests. */
 		while (k_sem_take(&data->reconfig_sem, K_NO_WAIT) == 0) {
-		}
-
-		if (ready_mask == 0) {
-			continue;
 		}
 
 		gpio_port_pins_t fired = 0;
@@ -384,6 +414,12 @@ static void gnl_evt_thread(void *arg1, void *arg2, void *arg3)
 		if (fired != 0) {
 			gpio_fire_callbacks(&data->callbacks, dev, fired);
 		}
+
+		/* Sleep 1ms every loop iteration — properly releases the Zephyr
+		 * CPU to any ready thread (SX126x work queue, mesh event loop,
+		 * timers). k_yield() is insufficient: it only yields to threads
+		 * of the same cooperative priority. */
+		k_sleep(K_MSEC(1));
 	}
 }
 
@@ -409,7 +445,7 @@ static int gpio_native_linux_init(const struct device *dev)
 	memset(data->pins, 0, sizeof(data->pins));
 
 	k_thread_create(&data->evt_thread, data->evt_thread_stack,
-			K_KERNEL_STACK_SIZEOF(data->evt_thread_stack),
+			2048, /* literal: K_KERNEL_STACK_SIZEOF unreliable on cross-compiled native_sim */
 			gnl_evt_thread, (void *)dev, NULL, NULL,
 			K_PRIO_COOP(7), 0, K_NO_WAIT);
 	data->evt_thread_started = true;
@@ -432,10 +468,16 @@ static int gpio_native_linux_init(const struct device *dev)
 											\
 	static struct gpio_native_linux_data gpio_native_linux_data_##inst;		\
 											\
+	/* POST_KERNEL: k_thread_create with K_NO_WAIT requires the scheduler
+	 * run queue to be initialized, which only happens by POST_KERNEL.
+	 * PRE_KERNEL_1 crashes on native_sim (POSIX arch) because the dlist
+	 * backing _kernel.ready_q is still NULL at that stage.
+	 * GPIO_INIT_PRIORITY (40) < SPI_INIT_PRIORITY (70), both POST_KERNEL,
+	 * so CS GPIO is still available when the SPI driver inits. */	\
 	DEVICE_DT_INST_DEFINE(inst, gpio_native_linux_init, NULL,			\
 			      &gpio_native_linux_data_##inst,				\
 			      &gpio_native_linux_cfg_##inst,				\
-			      PRE_KERNEL_1, CONFIG_GPIO_INIT_PRIORITY,			\
+			      POST_KERNEL, CONFIG_GPIO_INIT_PRIORITY,			\
 			      &gpio_native_linux_api);
 
 DT_INST_FOREACH_STATUS_OKAY(GPIO_NATIVE_LINUX_INIT)

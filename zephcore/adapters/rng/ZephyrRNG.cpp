@@ -220,7 +220,14 @@ void ZephyrRNG::mixIdentitySeed(uint8_t *out, size_t out_len,
 		for (size_t i = 0; i < n; i++) pool[80 + i] ^= extra[i];
 	}
 
-	/* Stage 4: CPU cycle-counter jitter, 200ms */
+	/* Stage 4: CPU cycle-counter jitter, 200ms.
+	 *
+	 * Skipped on POSIX arch (native_sim / Linux): the simulated clock only
+	 * advances when Zephyr threads yield, so k_uptime_get() is frozen while
+	 * this loop spins → infinite loop.  On Linux we have /dev/urandom (via
+	 * sys_csrand_get in stages 1 and 5) which is a far stronger source than
+	 * jitter sampling anyway. */
+#ifndef CONFIG_ARCH_POSIX
 	bool health_ok = sample_cpu_jitter(pool, sizeof(pool), 112, 200);
 	if (!health_ok) {
 		printk("ZephyrRNG: jitter health check failed, resampling 400ms\n");
@@ -229,13 +236,16 @@ void ZephyrRNG::mixIdentitySeed(uint8_t *out, size_t out_len,
 			printk("ZephyrRNG: jitter health still failing — continuing with mixed sources\n");
 		}
 	}
+#endif /* CONFIG_ARCH_POSIX */
 
 	/* Stage 5: late CSPRNG — catches any mid-boot radio init that
 	 * warmed the TRNG during the 200ms jitter window */
 	(void)sys_csrand_get(pool + 368, 64);
 
 	/* Stage 6: second jitter sample, independent timing window */
+#ifndef CONFIG_ARCH_POSIX
 	(void)sample_cpu_jitter(pool, sizeof(pool), 432, 50);
+#endif /* CONFIG_ARCH_POSIX */
 
 	/* Final conditioning: AES-256-CTR over the pool. Extracts a 32-byte
 	 * AES key via SHA-256(pool), then expands to out_len bytes via

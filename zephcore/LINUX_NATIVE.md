@@ -2,7 +2,7 @@
 
 Run ZephCore as a native Linux process on SBCs like the **Femtofox** (Luckfox Pico Mini + E22-900M30S) or **Raspberry Pi 4/5 + RAK6421 HAT**. The full mesh stack runs on top of Zephyr's `native_sim` board, talking to real SPI/GPIO via `/dev/spidev*` and `libgpiod v2`.
 
-The companion app connects via a TCP socket on port **5000** (matching upstream MeshCore Linux convention), so the same mobile app TCP config works against both ZephCore Linux and MeshCore Linux.
+The companion app connects via a TCP socket on port **5000**. Wire format is **raw NUS bytes with no length prefix** — each BLE NUS write becomes one TCP write, matching the MeshCore Windows companion "Connect via WiFi" protocol.
 
 ---
 
@@ -25,6 +25,15 @@ On the **target SBC** (where the binary runs):
 sudo usermod -a -G spi,gpio $USER
 ```
 
+**Femtofox only:** the Femtofox image ships with `meshtasticd` pre-installed and it holds
+the SPI bus / GPIO lines. Uninstall it before running ZephCore or the radio will be
+unavailable. Use `foxbuntu-config` → uninstall meshtasticd, or:
+
+```bash
+sudo systemctl stop meshtasticd
+sudo apt remove meshtasticd
+```
+
 No userspace library dependencies — the GPIO driver talks to `/dev/gpiochipN`
 directly via the kernel's GPIO V2 chardev uAPI (ioctl). Requires Linux ≥ 5.10
 (released Dec 2020 — every modern SBC distro has it). The SPI driver uses
@@ -32,7 +41,9 @@ spidev the same way (no library either).
 
 ### Enabling spidev on the SBC
 
-**Femtofox / Luckfox Pico Mini:** edit `/etc/luckfox.conf` to enable SPI0, then reboot.
+**Femtofox / Luckfox Pico Mini:** the official Femtofox image ships with SPI and GPIO
+already enabled — `/dev/spidev0.0` and `/dev/gpiochip0`–`3` are present out of the box.
+No extra configuration needed; skip straight to adding your user to the `spi`/`gpio` groups.
 
 **Raspberry Pi:** add `dtparam=spi=on` to `/boot/firmware/config.txt` (RPi 5) or `/boot/config.txt` (RPi 4) and reboot. Verify `/dev/spidev0.0` exists.
 
@@ -58,8 +69,11 @@ TCP companion transport listening on :5000
 
 ### 2. Femtofox (Luckfox Pico Mini, ARMv7-A)
 
+Note: use `native_sim` (32-bit), **not** `native_sim/native/64` — the Luckfox Pico Mini
+is ARMv7-A (32-bit) and the 64-bit variant will error at CMake configure time.
+
 ```bash
-west build -b native_sim/native/64 zephcore --pristine -- \
+west build -b native_sim zephcore -- \
   -DZEPHYR_TOOLCHAIN_VARIANT=cross-compile \
   -DNATIVE_TARGET_HOST=arm \
   -DCROSS_COMPILE=/usr/bin/arm-linux-gnueabihf- \
@@ -137,12 +151,16 @@ The binary prints its PTY path and TCP listen port at startup. Logs go to stderr
 
 ### Companion app connection
 
-In the ZephCore companion mobile app, choose TCP/Network mode and connect to:
+Use the MeshCore companion app's **"Connect via WiFi"** (TCP/Network) mode:
 
 - **Host:** the SBC's IP address
 - **Port:** `5000` (default; configurable via `CONFIG_ZEPHCORE_LINUX_TCP_PORT`)
 
-The wire framing is **2-byte big-endian length prefix + raw NUS payload**, matching upstream MeshCore Linux. Only one client connects at a time.
+Wire format: **MeshCore SerialWifiInterface framing** (matches ESP32 Arduino reference in `src/helpers/esp32/SerialWifiInterface.cpp`):
+- App → Node: `['<' (0x3C)][length_LSB][length_MSB][NUS payload...]`
+- Node → App: `['>' (0x3E)][length_LSB][length_MSB][NUS payload...]`
+
+Only one client connects at a time.
 
 ### Repeater CLI
 
@@ -204,7 +222,7 @@ west build … -- -DCONFIG_ZEPHCORE_LINUX_TCP_PORT=15000
 
 ### "TCP companion client disconnected" loops
 
-The wire framing is `2-byte BE length + payload`. If the companion app sends a different framing (raw NUS bytes, or 1-byte length, etc.), the transport will read a bogus length and bail. Verify the app is configured for MeshCore Linux TCP mode (port 5000 framing), not BLE-direct.
+The transport expects raw NUS bytes with no length prefix. If the connection drops immediately, capture traffic with `tcpdump -i any -X port 5000` and verify the first bytes the app sends look like a MeshCore opcode (e.g. `0x01` = CMD_APP_START), not an HTTP request or other framed protocol.
 
 ### LoRa packets fly out but nothing receives them
 
@@ -300,10 +318,12 @@ Build command verified (run from inside WSL with workspace at `/mnt/d/zephcore`)
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 export ZEPHYR_BASE=/mnt/d/zephcore/zephyr
-cd /mnt/d/zephcore && west build -b native_sim/native/64 zephcore --pristine
+cd /mnt/d/zephcore && west build -b native_sim zephcore
 ```
 
-The default 32-bit `native_sim` variant additionally requires `libc6-dev-i386`; the 64-bit variant works with stock `libc6-dev`.
+Use `native_sim` (32-bit) for x86-64 host smoke builds and for ARM cross-compile targets
+(Femtofox). Use `native_sim/native/64` only if targeting a 64-bit host natively (no
+cross-compile). The 32-bit variant requires `libc6-dev-i386` on the build host.
 
 ### Known caveats found during implementation
 
