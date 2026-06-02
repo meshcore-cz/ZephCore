@@ -194,7 +194,18 @@ list(APPEND BOARD_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 # Usage: zephcore_auto_pair_overlay("path/to/config.conf")
 #
 function(zephcore_auto_pair_overlay CONF_FILE)
-    if(NOT CONF_FILE OR NOT EXISTS "${CONF_FILE}")
+    if(NOT CONF_FILE)
+        return()
+    endif()
+    # User-supplied EXTRA_CONF_FILE entries are relative to the application
+    # source dir (e.g. "boards/linux_native/femtofox.conf"). CMake's EXISTS does
+    # not resolve relative paths against it, so resolve to absolute first — else
+    # the paired .overlay is silently skipped (which dropped the SX1262 node and
+    # broke ZEPHCORE_LORA when device wiring moved out of linux_common.overlay).
+    if(NOT IS_ABSOLUTE "${CONF_FILE}")
+        set(CONF_FILE "${CMAKE_CURRENT_SOURCE_DIR}/${CONF_FILE}")
+    endif()
+    if(NOT EXISTS "${CONF_FILE}")
         return()
     endif()
     string(REPLACE ".conf" ".overlay" OVERLAY_FILE "${CONF_FILE}")
@@ -261,7 +272,7 @@ elseif(BOARD MATCHES ".*mg24.*" OR BOARD MATCHES ".*efr32.*")
 elseif(DEFINED BOARD_QUALIFIERS AND BOARD_QUALIFIERS MATCHES ".*mg24.*")
     set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/mg24_common.conf")
 elseif(BOARD MATCHES "native_sim" OR BOARD MATCHES "native_posix")
-    set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/linux_common.conf")
+    set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/linux_native/linux_common.conf")
 else()
     set(ZEPHCORE_PLATFORM_CONF "")
 endif()

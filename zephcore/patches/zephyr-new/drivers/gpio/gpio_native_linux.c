@@ -3,17 +3,18 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Zephyr GPIO controller that bridges to a Linux /dev/gpiochipX device
- * via libgpiod v2. Runs under native_sim on a real Linux host (not in
- * QEMU or simulation).
+ * via the kernel's GPIO V2 character-device uAPI (direct ioctls, no
+ * libgpiod). Runs under native_sim on a real Linux host (not in QEMU or
+ * simulation).
  *
- * Each pin owns its own gpiod_line_request, lazily (re)created when
+ * Each pin owns its own kernel line request, lazily (re)created when
  * pin_configure or pin_interrupt_configure changes its settings. A
  * dedicated k_thread polls() the fds of all edge-detection-enabled pins
  * and fires the registered Zephyr gpio_callbacks on each event.
  *
- * Host-side libgpiod calls live in gpio_native_linux_adapt.c (compiled
- * into the native_simulator INTERFACE) to keep libgpiod headers out of
- * the Zephyr translation unit.
+ * Host-side chardev ioctls live in gpio_native_linux_adapt.c (compiled
+ * into the native_simulator INTERFACE) to keep host headers out of the
+ * Zephyr translation unit.
  */
 
 #define DT_DRV_COMPAT zephcore_gpio_native_linux

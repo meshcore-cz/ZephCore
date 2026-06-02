@@ -272,11 +272,10 @@ config ZEPHCORE_TRANSPORT_TCP
 	help
 	  Replaces the ZephyrBLE adapter with LinuxTCPTransport, exposing
 	  the companion NUS protocol over a TCP socket on Linux SBC builds
-	  (BOARD=native_sim). Auto-enabled by boards/common/linux_common.conf.
+	  (BOARD=native_sim). Auto-enabled by boards/linux_native/linux_common.conf.
 
-	  The wire format is a 2-byte big-endian length prefix followed by
-	  the raw NUS payload, matching upstream MeshCore Linux companion
-	  service convention.
+	  The wire format is MeshCore's SerialWifiInterface framing:
+	  ['<'][len_LSB][len_MSB][NUS payload] app->node and ['>']... node->app.
 
 config ZEPHCORE_LINUX_TCP_PORT
 	int "TCP listen port"

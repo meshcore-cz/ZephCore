@@ -1,8 +1,10 @@
 # ZephCore Native Linux Port
 
-Run ZephCore as a native Linux process on SBCs like the **Femtofox** (Luckfox Pico Mini + E22-900M30S) or **Raspberry Pi 4/5 + RAK6421 HAT**. The full mesh stack runs on top of Zephyr's `native_sim` board, talking to real SPI/GPIO via `/dev/spidev*` and `libgpiod v2`.
+Run ZephCore as a native Linux process on SBCs like the **Femtofox** (Luckfox Pico Mini + E22-900M30S) or a **Raspberry Pi + RAK6421 HAT**. The full mesh stack runs on top of Zephyr's `native_sim` board, talking to real SPI/GPIO via `/dev/spidev*` and the kernel's **GPIO V2 character-device uAPI** (direct ioctls — no libgpiod dependency).
 
-The companion app connects via a TCP socket on port **5000**. Wire format is **raw NUS bytes with no length prefix** — each BLE NUS write becomes one TCP write, matching the MeshCore Windows companion "Connect via WiFi" protocol.
+The companion app connects via a TCP socket on port **5000**, using MeshCore's `SerialWifiInterface` framing (`['<'][len_LSB][len_MSB][payload]` app→node, `['>']…` node→app) — see [Companion app connection](#companion-app-connection).
+
+> **Real-time clock is automatic.** The binary forces the `native_sim` simulated clock into real-time mode at boot (equivalent to always passing `--rt`), because it drives a *real* radio whose BUSY/DIO1 timing happens in wall-clock time. You do **not** need to pass `--rt`. See [adapters/transport/linux_native_setup.c](adapters/transport/linux_native_setup.c).
 
 ---
 
@@ -13,17 +15,17 @@ On the **build host** (where you run `west build`):
 ```bash
 # Zephyr SDK and west workspace as per the main CLAUDE.md.
 
-# Cross-compile toolchains (for SBC targets):
-sudo apt install gcc-arm-linux-gnueabihf      # Femtofox (RV1103 ARMv7-A)
-sudo apt install gcc-aarch64-linux-gnu        # Raspberry Pi 4/5 (aarch64)
+# Cross-compile toolchains (for SBC targets) — install BOTH gcc and g++:
+# the mesh layer is C++, so the g++ cross-compiler is required (a build with
+# only gcc fails at CMake configure with "Tell CMake where to find the compiler").
+sudo apt install gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf   # Femtofox (RV1103 ARMv7-A)
+sudo apt install gcc-aarch64-linux-gnu   g++-aarch64-linux-gnu     # Raspberry Pi (aarch64)
 ```
 
-On the **target SBC** (where the binary runs):
-
-```bash
-# Grant your user access to /dev/spidev and /dev/gpiochip (or run as root).
-sudo usermod -a -G spi,gpio $USER
-```
+On the **target SBC** (where the binary runs): grant your user access to
+`/dev/spidev*` and `/dev/gpiochip*` so you don't need `sudo`/root — see
+[Running without root](#running-without-root) below. (You *can* just run as
+root with `sudo`, but it's not required.)
 
 **Femtofox only:** the Femtofox image ships with `meshtasticd` pre-installed and it holds
 the SPI bus / GPIO lines. Uninstall it before running ZephCore or the radio will be
@@ -49,12 +51,68 @@ No extra configuration needed; skip straight to adding your user to the `spi`/`g
 
 ---
 
+## Running without root
+
+By default `/dev/spidev*` and `/dev/gpiochip*` are owned `root:root`, so the
+binary only runs under `sudo`. The binary needs **no** elevated privileges of
+its own — it only needs read/write on those two device classes (the TCP port is
+5000, non-privileged; the flash file is written in your home dir). Grant access
+once with groups + a udev rule:
+
+```bash
+# 1. Create the groups (the Femtofox/foxbuntu image ships without them).
+sudo groupadd -f spi
+sudo groupadd -f gpio
+
+# 2. Add your login user (e.g. "femto") to both.
+sudo usermod -aG spi,gpio "$USER"
+
+# 3. udev rule: give those groups access to the SPI + GPIO char devices.
+sudo tee /etc/udev/rules.d/90-zephcore.rules >/dev/null <<'EOF'
+KERNEL=="spidev*",                 GROUP="spi",  MODE="0660"
+SUBSYSTEM=="gpio", KERNEL=="gpiochip*", GROUP="gpio", MODE="0660"
+EOF
+
+# 4. Reload udev and re-trigger so the rule applies to the existing nodes.
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=spidev --subsystem-match=gpio
+
+# 5. Log out and back in (group membership is only picked up at login).
+#    Verify:  id        # should list "spi" and "gpio"
+#             ls -l /dev/spidev0.0 /dev/gpiochip1    # group spi / gpio, mode 0660
+```
+
+Then run the binary **without** `sudo`:
+
+```bash
+./zephcore_native_linux.exe
+```
+
+> **If the udev rule doesn't stick** (some minimal images use `mdev`/busybox
+> instead of systemd-udev, which ignores `/etc/udev/rules.d`), set the
+> permissions at boot instead — e.g. a tiny systemd unit or an `rc.local` line:
+> ```bash
+> chgrp gpio /dev/gpiochip* && chmod 660 /dev/gpiochip*
+> chgrp spi  /dev/spidev*   && chmod 660 /dev/spidev*
+> ```
+
+> **Femtofox note:** you must still stop/uninstall `meshtasticd` first (it holds
+> the SPI bus) — see the Prerequisites section. Running as your user vs root
+> doesn't change that.
+
+---
+
 ## Quick Start
 
 ### 1. Host smoke build (x86-64 Linux, no real radio)
 
+A device preset is required (it provides the SX1262 node); the Femtofox preset
+is fine for a host smoke build — the SPI/GPIO opens just fail gracefully with no
+hardware:
+
 ```bash
-west build -b native_sim/native/64 zephcore --pristine
+rm -rf build && west build -b native_sim/native/64 zephcore -- \
+  -DEXTRA_CONF_FILE="boards/linux_native/femtofox.conf"
 ./build/zephyr/zephcore_native_linux.exe
 ```
 
@@ -77,23 +135,53 @@ west build -b native_sim zephcore -- \
   -DZEPHYR_TOOLCHAIN_VARIANT=cross-compile \
   -DNATIVE_TARGET_HOST=arm \
   -DCROSS_COMPILE=/usr/bin/arm-linux-gnueabihf- \
-  -DEXTRA_CONF_FILE="boards/common/femtofox.conf"
+  -DEXTRA_CONF_FILE="boards/linux_native/femtofox.conf"
 
-scp build/zephyr/zephcore_native_linux.exe root@femtofox.local:/opt/zephcore/
-ssh root@femtofox.local /opt/zephcore/zephcore_native_linux.exe
+scp build/zephyr/zephcore_native_linux.exe femto@femtofox.local:~/
+ssh femto@femtofox.local ./zephcore_native_linux.exe   # no sudo once groups are set up
 ```
 
-### 3. Raspberry Pi 4 + RAK6421 (aarch64)
+(No `--rt` flag needed — real-time mode is forced at boot. See the note at the top.)
+
+### 3. Raspberry Pi + RAK6421 HAT (aarch64)
+
+The `rak6421` preset is named after the **HAT**, not a Pi model — the wiring is
+identical on every Pi. The only per-model difference is the Linux gpiochip:
+
+- **Pi 2 / 3 / 4 / Zero 2** → `gpiochip0` → `rak6421.conf`
+- **Pi 5** → `gpiochip4` (RP1) → `rak6421_pi5.conf`
+
+The build command is unchanged by the native-Linux work this cycle — the
+GPIO-driver fixes, automatic `--rt`, and per-node persistence apply to every
+native build. For a 64-bit Pi OS (the usual case on Pi 3/4/5):
 
 ```bash
-west build -b native_sim/native/64 zephcore --pristine -- \
+rm -rf build && west build -b native_sim/native/64 zephcore -- \
   -DZEPHYR_TOOLCHAIN_VARIANT=cross-compile \
   -DNATIVE_TARGET_HOST=aarch64 \
   -DCROSS_COMPILE=/usr/bin/aarch64-linux-gnu- \
-  -DEXTRA_CONF_FILE="boards/common/rpi_rak6421.conf"
+  -DEXTRA_CONF_FILE="boards/linux_native/rak6421.conf"      # Pi 5: rak6421_pi5.conf
+scp build/zephyr/zephcore_native_linux.exe pi@raspberrypi.local:~/
 ```
 
-For RPi 5, use `boards/common/rpi5_rak6421.conf` (same wiring, `gpiochip4` instead of `gpiochip0`).
+(On a **32-bit** Pi OS — e.g. Pi 2, or Pi 3/4 on 32-bit Raspberry Pi OS — build the
+armhf way instead: `-b native_sim -DNATIVE_TARGET_HOST=arm -DCROSS_COMPILE=/usr/bin/arm-linux-gnueabihf-`,
+same `-DEXTRA_CONF_FILE`.)
+
+`rak6421_pi5` is just `rak6421` with `gpiochip4` — equivalently you can keep using
+`rak6421.conf` and override at runtime with `--lora-gpio-chip=/dev/gpiochip4`.
+
+> **`--pristine` in this WSL workspace:** prefer `rm -rf build &&` over `west build --pristine`.
+> `--pristine` can feed Windows-style `D:/…` paths to CMake when `.west/config` was
+> initialised on Windows. `rm -rf build &&` is equivalent and works everywhere. (On a
+> native-Linux build host, plain `--pristine` is fine.)
+>
+> **Status:** the RAK6421 presets are **build-verified but not yet hardware-tested** —
+> only the Femtofox is confirmed end-to-end (2026-06-02). The same GPIO driver carries the
+> fixes, so it *should* work; if the radio is dead, follow the "Radio does nothing"
+> troubleshooting below. Note the RAK13300/RAK13302 preset assumes **no DIO3 TCXO** (XTAL +
+> discrete RF switch); if your module has a TCXO, add `dio3-tcxo-voltage`/`tcxo-power-startup-delay-ms`
+> to `boards/linux_native/rak6421.overlay` (and `rak6421_pi5.overlay`).
 
 ### 4. Repeater role (no companion)
 
@@ -128,9 +216,9 @@ SX1262 extras: DIO2 drives the RF switch (`dio2-tx-enable`), DIO3 powers the TCX
 
 Source: `github.com/femtofox/femtofox` → `foxbuntu/.../femtofox_SX1262_TCXO.yaml`.
 
-### Raspberry Pi 4/5 + RAK6421 HAT + RAK13300/RAK13302 (IO Slot 1)
+### Raspberry Pi + RAK6421 HAT + RAK13300/RAK13302 (IO Slot 1)
 
-BCM GPIO numbers (RPi 4: gpiochip0; RPi 5: gpiochip4):
+BCM GPIO numbers (Pi 2/3/4/Zero 2: `gpiochip0` → `rak6421.conf`; Pi 5: `gpiochip4` → `rak6421_pi5.conf`):
 
 | Signal | BCM | WisBlock slot 1 pin |
 |---|---|---|
@@ -177,6 +265,95 @@ socat /dev/pts/3 TCP-LISTEN:6000,reuseaddr,fork &
 nc <sbc-ip> 6000
 ```
 
+### Run at boot (systemd service)
+
+To start ZephCore automatically at boot and restart it if it ever exits, install
+a systemd service. This assumes you've already done the [Running without root](#running-without-root)
+setup (the `spi`/`gpio` groups + udev rule), so the service can run as your
+normal user — **no root**.
+
+Create `/etc/systemd/system/zephcore.service` (adjust `User=` and the paths to
+your setup):
+
+```ini
+[Unit]
+Description=ZephCore native LoRa mesh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=femto
+SupplementaryGroups=spi gpio
+# WorkingDirectory pins where the persistent flash file lands
+# (meshcore_settings_<hostname>.bin) and must be writable by User=.
+WorkingDirectory=/home/femto
+ExecStart=/home/femto/zephcore_native_linux.exe
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable + start it (and have it come back on every reboot):
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now zephcore      # start now + at boot
+sudo systemctl status zephcore            # check it's running
+journalctl -u zephcore -f                 # follow logs (replaces stderr)
+```
+
+Manage it:
+
+```bash
+sudo systemctl restart zephcore
+sudo systemctl stop zephcore
+sudo systemctl disable zephcore           # stop auto-start at boot
+```
+
+Notes:
+- **No `--rt` flag** is needed — real-time mode is baked into the binary.
+- **Stop `meshtasticd` first** (Femtofox): if it's installed it grabs the SPI bus.
+  Disable it so it doesn't race your service: `sudo systemctl disable --now meshtasticd`.
+- **Companion (TCP) role** works perfectly as a service — connect the app to
+  `<sbc-ip>:5000` as usual.
+- **Repeater role:** the CLI is a pseudo-terminal whose path (`/dev/pts/N`) is
+  printed to the journal at boot (`journalctl -u zephcore | grep pseudotty`). To
+  reach it remotely, add a bridge as `ExecStartPost`, e.g.
+  `ExecStartPost=/bin/sh -c 'socat ... TCP-LISTEN:6000,fork &'` — or just run the
+  repeater in the foreground when you need the CLI.
+- If you relocate the binary (e.g. to `/usr/local/bin/zephcore`), keep
+  `WorkingDirectory=` pointed at a user-writable dir so the settings file persists.
+
+---
+
+## Persistent storage
+
+Identity, prefs, contacts, channels and BLE-equivalent settings all live in
+LittleFS on `/lfs`, which is backed by Zephyr's flash simulator. On native Linux
+that simulator is **file-backed** (not RAM), so everything survives restarts.
+
+The backing file is named **`meshcore_settings_<hostname>.bin`** and created in
+the binary's working directory on first run (`<hostname>` comes from the Linux
+`gethostname()`, so multiple nodes on one host each get their own file). For the
+Femtofox that's `meshcore_settings_femtofox.bin`.
+
+```bash
+ls -l meshcore_settings_*.bin     # appears after the first run
+```
+
+- To move a node's identity to another machine, copy this file.
+- To reset a node to a fresh identity, delete it (a new one is created next run).
+- An explicit `--flash=/path/to/file.bin` overrides the default name/location.
+- **Migrating from an older build** that used the generic `flash.bin`:
+  `cp flash.bin meshcore_settings_$(hostname).bin` before first run to keep your
+  existing identity.
+
+> Implementation: `patches/zephyr/0008-flash-sim-per-node-file.patch` makes the
+> flash simulator default to the per-node filename instead of `flash.bin`.
+
 ---
 
 ## Runtime Pin Override
@@ -189,7 +366,7 @@ For one-off hardware setups or custom wiring, override DT defaults at runtime:
   --lora-gpio-chip=/dev/gpiochip1
 ```
 
-Currently only the **paths** are runtime-overridable; pin offsets come from the DTS overlay you build with. To change pin numbers without rebuilding, create your own `boards/common/<custom>.conf` + `.overlay` and pass it via `-DEXTRA_CONF_FILE`.
+Currently only the **paths** are runtime-overridable; pin offsets come from the DTS overlay you build with. To change pin numbers without rebuilding, create your own `boards/linux_native/<device>.conf` + `.overlay` (copy `femtofox.overlay` as a starting point) and pass it via `-DEXTRA_CONF_FILE`.
 
 Run `./zephcore_native_linux.exe --help` to see all available command-line arguments registered by the native_sim infrastructure (Zephyr drivers, our SPI/GPIO drivers, etc.).
 
@@ -199,10 +376,9 @@ Run `./zephcore_native_linux.exe --help` to see all available command-line argum
 
 ### Permission denied opening /dev/spidev0.0 or /dev/gpiochip*
 
-```bash
-sudo usermod -a -G spi,gpio $USER
-# Log out and back in for group membership to take effect.
-```
+Set up group access — see [Running without root](#running-without-root). On the
+Femtofox image the `spi`/`gpio` groups don't exist yet, so you must `groupadd`
+them and add a udev rule (just `usermod` is not enough). Or run with `sudo`.
 
 ### `/dev/spidev0.0: No such file or directory`
 
@@ -224,17 +400,32 @@ west build … -- -DCONFIG_ZEPHCORE_LINUX_TCP_PORT=15000
 
 The transport expects raw NUS bytes with no length prefix. If the connection drops immediately, capture traffic with `tcpdump -i any -X port 5000` and verify the first bytes the app sends look like a MeshCore opcode (e.g. `0x01` = CMD_APP_START), not an HTTP request or other framed protocol.
 
-### LoRa packets fly out but nothing receives them
+### Radio does nothing (no RX, CAD always times out, TX never completes)
 
-Check that DIO1 is wired and configured correctly. The interrupt path is the primary RX trigger. If DIO1 is misrouted, the driver will appear to TX fine but never reports RX.
+The interrupt path (DIO1) and BUSY readback are the spine of all radio ops. If
+they're broken at the GPIO layer, the chip stays wedged in standby and *every*
+operation fails (CAD `-ETIMEDOUT`, no RX, no TX-done).
 
-Verify on the host with `gpioget`:
+> **Don't** try to verify DIO1/BUSY with `gpioget /dev/gpiochip1 23` while the
+> binary is running — the kernel grants GPIO lines **exclusively**, so the
+> binary holds them and `gpioget` just returns `-EBUSY`. Reading it with the
+> binary stopped tells you nothing (nothing is driving the radio). Instead,
+> build with LoRa debug logging and read the chip's own registers:
+> ```bash
+> west build … -- … -DCONFIG_LORA_LOG_LEVEL_DBG=y
+> ```
+> A healthy boot shows `sx126x_irq_work_handler: IRQ status: …` lines on RX/CAD/TX.
 
-```bash
-gpioget /dev/gpiochip1 23     # should toggle when a peer transmits
-```
+Things that previously broke this exact path (all fixed; listed so you recognize
+the symptoms if a regression appears):
+- Native GPIO driver requesting no lines (the `GPIO_DISCONNECTED == 0` trap) →
+  BUSY stuck-low, commands dropped, chip frozen.
+- Double inversion on active-low pins → RESET driven backwards, chip held in reset.
+- Missing real-time clock mode → CAD/TX/RX time out before the real radio responds
+  (now forced automatically; do not remove `linux_native_setup.c`).
 
-If the host can't see DIO1 transitioning, the radio isn't bringing the line up — check SX1262 RESET sequencing and DIO1 wiring.
+If a regression appears, check `port_get_raw`/`pin_configure` in
+`gpio_native_linux.c` and that `linux_native_setup.c` is still compiled.
 
 ### `bind(5000) failed: 98` (EADDRINUSE)
 
@@ -279,20 +470,27 @@ The mesh C++ layer and the patched SX1262 Zephyr driver are bit-identical to the
 - **Not BLE.** The companion app must support TCP/Network mode. No BlueZ integration.
 - **Not for production use** per Zephyr's `native_sim` documentation. Works fine for hobby/lab deployments.
 - **Single companion client.** One TCP connection at a time, mirroring `BT_MAX_CONN=1`.
-- **No persistent flash.** Storage uses the host filesystem under `/lfs` via LittleFS over a flat backing file. Survives reboot if you persist the file; otherwise the node is regenerated each run.
+- **Persistent storage** is file-backed and survives restarts — see [Persistent storage](#persistent-storage).
 
 ---
 
 ## Files
 
-- `boards/common/linux_common.conf` + `.overlay` — auto-applied when `BOARD=native_sim`
-- `boards/common/femtofox.conf` / `.overlay` — Femtofox preset
-- `boards/common/rpi_rak6421.conf` / `.overlay` — Raspberry Pi 4 preset
-- `boards/common/rpi5_rak6421.conf` / `.overlay` — Raspberry Pi 5 preset
+All native-Linux board files live under **`boards/linux_native/`**:
+
+- `boards/linux_native/linux_common.conf` + `.overlay` — platform base, auto-applied when `BOARD=native_sim` (no device wiring)
+- `boards/linux_native/femtofox.conf` + `.overlay` — Femtofox preset (SX1262 TCXO wiring)
+- `boards/linux_native/rak6421.conf` + `.overlay` — RAK6421 HAT, Pi 2/3/4/Zero 2 (gpiochip0)
+- `boards/linux_native/rak6421_pi5.conf` + `.overlay` — RAK6421 HAT, Pi 5 (gpiochip4)
+
+> These are `EXTRA_CONF_FILE` **presets**, not Zephyr boards — you still build with
+> `-b native_sim … -DEXTRA_CONF_FILE="boards/linux_native/<device>.conf"`, not `-b <device>`.
 - `adapters/transport/LinuxTCPTransport.c` — TCP companion transport
+- `adapters/transport/linux_native_setup.c` — forces real-time clock mode at boot (bakes in `--rt`)
 - `patches/zephyr-new/drivers/spi/spi_native_linux*` — spidev SPI driver
-- `patches/zephyr-new/drivers/gpio/gpio_native_linux*` — libgpiod v2 GPIO driver
+- `patches/zephyr-new/drivers/gpio/gpio_native_linux*` — GPIO driver (kernel GPIO V2 chardev ioctls, no libgpiod)
 - `patches/zephyr/0007-spi-gpio-native-linux.patch` — wires the new drivers into Zephyr's `drivers/spi/` and `drivers/gpio/` CMakeLists + Kconfig
+- `patches/zephyr/0008-flash-sim-per-node-file.patch` — flash simulator defaults to `meshcore_settings_<hostname>.bin` for persistent per-node storage
 
 ---
 
@@ -306,12 +504,13 @@ End-to-end verified under WSL Ubuntu 24.04 (gcc 13.3):
 
 - ✅ All 7 `patches/zephyr/*.patch` apply cleanly (including the new `0007-spi-gpio-native-linux.patch`).
 - ✅ All files in `patches/zephyr-new/` copy correctly into the Zephyr tree.
-- ✅ Platform detection routes `BOARD=native_sim` to `boards/common/linux_common.conf`.
+- ✅ Platform detection routes `BOARD=native_sim` to `boards/linux_native/linux_common.conf`.
 - ✅ `native_sim/native/64` builds clean → `build/zephyr/zephcore_native_linux.exe` (~4.3 MB ELF).
 - ✅ Binary runs. Zephyr OS boots, mesh event loop starts.
 - ✅ `spi_native_linux` driver loads and attempts to open `/dev/spidev0.0` (fails in WSL: no SPI hardware).
 - ✅ `LinuxTCPTransport` listens on port 5000.
-- ✅ TCP client connect/disconnect works; 2-byte BE length framing parses correctly.
+- ✅ TCP client connect/disconnect works; `SerialWifiInterface` (`<`/`>` + 2-byte LE length) framing parses correctly.
+- ✅ **End-to-end on real Femtofox hardware (2026-06-02):** radio RX, CAD (LBT), and TX all working; companion app connects and meshes; settings persist across restarts. (Required fixing two bugs in the native GPIO driver — see "Known caveats" below.)
 
 Build command verified (run from inside WSL with workspace at `/mnt/d/zephcore`):
 
@@ -326,6 +525,28 @@ Use `native_sim` (32-bit) for x86-64 host smoke builds and for ARM cross-compile
 cross-compile). The 32-bit variant requires `libc6-dev-i386` on the build host.
 
 ### Known caveats found during implementation
+
+- **Native GPIO driver had two bugs that killed the radio** (fixed 2026-06-02,
+  `patches/zephyr-new/drivers/gpio/`):
+  1. `rebuild_line()` tested `(flags & GPIO_DISCONNECTED) == GPIO_DISCONNECTED`,
+     but `GPIO_DISCONNECTED == 0`, so the test was *always true* and **no GPIO
+     line was ever actually requested** — every input read returned 0 and every
+     output write was a no-op (SPI still worked only because spidev drove its own
+     hardware CS). BUSY read stuck-low → driver never waited for the chip →
+     commands issued while BUSY → silently dropped → chip frozen in STBY_RC. Fix:
+     test `(flags & (GPIO_INPUT | GPIO_OUTPUT)) == GPIO_DISCONNECTED`.
+  2. The driver passed `GPIO_V2_LINE_FLAG_ACTIVE_LOW` to the kernel while Zephyr's
+     generic GPIO layer *already* inverts active-low pins (`data->invert`) →
+     **double inversion** drove the active-low RESET line backwards, holding the
+     chip in reset. Fix: driver `port_*_raw` are physical/raw; let Zephyr own
+     inversion (don't set the kernel `ACTIVE_LOW` flag).
+  Symptom of both: TCXO/XOSC/CAD all *look* like the culprit (XOSC_START_ERR,
+  CAD `-ETIMEDOUT`) but are downstream — the chip is simply wedged.
+
+- **`--rt` is mandatory and now automatic.** Without real-time clock mode the
+  `native_sim` clock free-runs decoupled from wall time, so real-radio timeouts
+  (200 ms CAD, TX/RX-done) fire before the hardware responds. Forced at boot via
+  `linux_native_setup.c` (`hwtimer_set_real_time_mode(true)`).
 
 - **Double-overlay listing** in `EXTRA_DTC_OVERLAY_FILE`: `linux_common.overlay` gets auto-paired twice — once when the platform conf is selected, once again when the EXTRA_CONF_FILE list is re-walked. Pre-existing CMakeLists.txt quirk affecting all platform confs; harmless (DTC merges idempotently) but cosmetic.
 
