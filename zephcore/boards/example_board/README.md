@@ -21,6 +21,7 @@ Supported Boards
 | ThinkNode M6         | `west build -b thinknode_m6 zephcore`     | UF2 drag-drop or `west flash` |
 | RAK WisMesh Tag      | `west build -b rak_wismesh_tag zephcore`  | UF2 drag-drop or `west flash` |
 | Ikoka Nano 30dBm     | `west build -b ikoka_nano_30dbm zephcore` | UF2 drag-drop                 |
+| GAT562 30S Mesh Kit  | `west build -b gat562_30s zephcore`       | UF2 drag-drop or `west flash` |
 | LilyGo T-Echo        | `west build -b lilygo_techo zephcore`     | UF2 drag-drop or `west flash` |
 | Heltec T114          | `west build -b heltec_t114 zephcore`      | UF2 drag-drop or `west flash` |
 

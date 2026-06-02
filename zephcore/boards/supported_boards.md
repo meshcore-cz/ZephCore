@@ -19,6 +19,7 @@ xiao_nrf52840
 lilygo_techo
 promicro_sx1262
 heltec_t114
+gat562_30s
 ```
 
 > **RAK WisMesh Pocket** (WisBlock pocket): use `-b rak4631` — same board string and firmware as **RAK4631**.
