@@ -528,7 +528,11 @@ void RepeaterMesh::sendFloodReply(mesh::Packet* packet, unsigned long delay_mill
 
 bool RepeaterMesh::allowPacketForward(const mesh::Packet* packet) {
     if (_prefs.disable_fwd) return false;
-    if (packet->isRouteFlood() && packet->getPathHashCount() >= _prefs.flood_max) return false;
+    if (packet->isRouteFlood()) {
+        if (packet->getPathHashCount() >= _prefs.flood_max) return false;
+        // un-scoped floods can be clamped to a lower hop limit than scoped (transport) floods
+        if (packet->getRouteType() == ROUTE_TYPE_FLOOD && packet->getPathHashCount() >= _prefs.flood_max_unscoped) return false;
+    }
     if (packet->isRouteFlood() && recv_pkt_region == nullptr) return false;
     if (packet->isRouteFlood() && _prefs.loop_detect != LOOP_DETECT_OFF) {
         const uint8_t* maximums;

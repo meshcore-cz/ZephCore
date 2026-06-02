@@ -47,6 +47,7 @@ struct NodePrefs {
 	uint8_t multi_acks;
 	float bw;
 	uint8_t flood_max;
+	uint8_t flood_max_unscoped;     // hop limit for un-scoped (ROUTE_TYPE_FLOOD) floods
 	uint8_t interference_threshold;
 	uint8_t agc_reset_interval;     // stored as secs / 4
 	// Power saving
@@ -117,6 +118,7 @@ static inline void initNodePrefs(NodePrefs* prefs) {
 	prefs->allow_read_only = 0;
 	prefs->multi_acks = 0;
 	prefs->flood_max = 64;            // max hops for flood packets (0 = blocking all!)
+	prefs->flood_max_unscoped = 64;  // un-scoped flood hop limit (defaults to flood_max)
 	prefs->interference_threshold = 0;
 	prefs->agc_reset_interval = 0;
 	prefs->powersaving_enabled = 0;

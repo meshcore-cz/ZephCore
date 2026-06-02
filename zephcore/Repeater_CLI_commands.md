@@ -184,6 +184,7 @@ All `set uplink.*` changes are saved immediately and only applied after reboot.
 | `get direct.txdelay` | *(deprecated)* Always returns "adaptive (direct.txdelay deprecated)" |
 | `get backoff.multiplier` | Per-dupe reactive backoff multiplier |
 | `get flood.max` | Max flood retransmit hops |
+| `get flood.max.unscoped` | Max retransmit hops for un-scoped floods |
 | `get flood.advert.interval` | Flood advertisement interval in hours |
 | `get advert.interval` | Local advertisement interval in minutes |
 | `get apc.margin` | Adaptive Power Control target RSSI margin in dB |
@@ -225,6 +226,7 @@ Changes are persisted immediately unless noted. Some require a reboot.
 | `set direct.txdelay <value>` | | Accepted for prefs compatibility — **ignored** (direct.txdelay is adaptive) |
 | `set backoff.multiplier <m>` | 0.0–2.0 | Per-dupe reactive backoff multiplier (0 = disable reactive backoff) |
 | `set flood.max <count>` | 0–64 | Maximum flood retransmit hops |
+| `set flood.max.unscoped <count>` | 0–64 | Hop limit for un-scoped floods only (default 64 = same as flood.max); scoped/transport floods still use flood.max |
 | `set flood.advert.interval <hours>` | 3–168 | How often the repeater floods its own advertisement |
 | `set advert.interval <mins>` | min–240 | How often the repeater sends local advertisements |
 | `set apc.margin <db>` | 6–30 | Target RSSI margin for Adaptive Power Control |
