@@ -252,18 +252,69 @@ Only one client connects at a time.
 
 ### Repeater CLI
 
-The repeater role's USB CDC CLI maps onto Zephyr's `CONFIG_UART_NATIVE_PTY`. At boot:
+The repeater role exposes the same configuration CLI as an MCU repeater's USB-CDC
+serial console — see [Repeater_CLI_commands.md](Repeater_CLI_commands.md) for the
+full command list (`get`/`set`, `password`, `reboot`, `clock`, …). On native Linux
+that console maps onto Zephyr's native-PTY UART (`CONFIG_SERIAL` +
+`CONFIG_UART_NATIVE_PTY`). At boot the binary prints the pseudo-terminal it created:
 
 ```
-UART_0 connected to pseudotty: /dev/pts/3
+uart connected to pseudotty: /dev/pts/3
 ```
 
-`screen /dev/pts/3` to attach locally. For remote access, bridge the PTY to TCP with `socat`:
+That `/dev/pts/N` path **is** the serial console — point any serial terminal at it.
+
+> **The PTY number changes on every run.** Grab it from the boot output each time
+> (or from the journal when running as a service — see below). It is not stable
+> across restarts.
+
+#### Attach locally (same machine as the binary)
 
 ```bash
+screen /dev/pts/3        # detach: Ctrl-a then d ; quit: Ctrl-a then k
+# or
+picocom /dev/pts/3
+# or
+minicom -D /dev/pts/3
+```
+
+You get the repeater prompt directly. Logs go to the binary's stderr, **not** the
+PTY, so the CLI stays clean (no log spam interleaved with your typing).
+
+#### Attach remotely (configure an SBC over the network)
+
+Bridge the PTY to a TCP port with `socat`, then connect from your workstation:
+
+```bash
+# on the SBC:
 socat /dev/pts/3 TCP-LISTEN:6000,reuseaddr,fork &
+# from anywhere on the network:
 nc <sbc-ip> 6000
 ```
+
+#### When running as a systemd service
+
+The binary runs in the background, so there's no terminal to attach to and the
+PTY path is only in the journal:
+
+```bash
+journalctl -u zephcore | grep pseudotty     # find the current /dev/pts/N
+```
+
+Because the path changes every boot and you can't `screen` a backgrounded
+process, the practical options are:
+
+- **Expose the CLI on a fixed TCP port** by adding the `socat` bridge as an
+  `ExecStartPost=` in the unit (see [Run at boot](#run-at-boot-systemd-service)),
+  so the console is always reachable at `<sbc-ip>:6000` regardless of the PTY
+  number. Then `nc <sbc-ip> 6000` to configure.
+- **Or run the repeater in the foreground** (`sudo systemctl stop zephcore` then
+  launch the binary by hand) just while you need to change settings, and restart
+  the service afterward.
+
+After changing settings, persist + apply them the same way as on an MCU repeater
+(most `set` commands take effect immediately; some require `reboot`). Settings
+survive restarts via the per-node flash file — see [Persistent storage](#persistent-storage).
 
 ### Run at boot (systemd service)
 

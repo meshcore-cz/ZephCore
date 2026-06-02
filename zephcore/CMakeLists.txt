@@ -503,6 +503,16 @@ if(CONFIG_ZEPHCORE_ROLE_REPEATER)
     helpers/TransportKeyStore.cpp
     helpers/CommonCLI.cpp
   )
+  # Headless repeater (e.g. native-Linux SBC): no display/buttons/buzzer, so the
+  # real ui_* implementation (helpers/ui-button or helpers/ui-joystick) isn't
+  # compiled. main_repeater.cpp calls ui_* unconditionally — pull in the weak
+  # no-op stubs to satisfy the link. Mirrors the companion TCP branch above.
+  if(NOT CONFIG_ZEPHCORE_UI_DESIGN_BUTTON AND NOT CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK)
+    target_sources(app PRIVATE helpers/ui/ui_headless_stubs.c)
+    target_include_directories(app PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/helpers/ui
+    )
+  endif()
   # Shared USBD CDC ACM init + 1200-baud DFU + DTR event/callback module.
   # ESP32 boards use usb_serial (no UDC/CDC ACM), so skip when not present.
   if(NOT CONFIG_CDC_ACM_SERIAL_INITIALIZE_AT_BOOT AND (CONFIG_USB_CDC_ACM OR CONFIG_USBD_CDC_ACM_CLASS))
