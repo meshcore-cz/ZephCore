@@ -17,6 +17,7 @@
 #include <adapters/ble/ZephyrBLE.h>
 #include <adapters/gps/ZephyrGPSManager.h>
 #include <helpers/time_sync.h>
+#include <adapters/clock/ZephyrRTCDiscover.h>
 #if IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_BUTTON) || IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK)
 #include <ui_task.h>
 #define ZEPHCORE_HAS_UI_TASK 1
@@ -2208,6 +2209,7 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			if (secs >= curr) {
 				getRTCClock()->setCurrentTime(secs);
 				time_sync_report(TIME_SYNC_APP);
+				zephcore_rtc_save(secs);  /* persist to hardware RTC */
 				sendPacketOk();
 			} else {
 				sendPacketError(ERR_ILLEGAL_ARG);

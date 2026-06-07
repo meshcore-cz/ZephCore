@@ -21,6 +21,7 @@ LOG_MODULE_REGISTER(zephcore_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 
 #include <ZephyrDataStore.h>
 #include <adapters/clock/ZephyrRTCClock.h>
+#include <adapters/clock/ZephyrRTCDiscover.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/drivers/hwinfo.h>
 #include <zephyr/sys/reboot.h>
@@ -754,6 +755,7 @@ static void gps_fix_callback(double lat, double lon, int64_t utc_time)
 		LOG_INF("GPS fix: RTC sync time=%lld", utc_time);
 		rtc_clock.setCurrentTime((uint32_t)utc_time);
 		time_sync_report(TIME_SYNC_GPS);
+		zephcore_rtc_save((uint32_t)utc_time);  /* persist to hardware RTC */
 	}
 
 #ifdef ZEPHCORE_LORA
@@ -854,6 +856,16 @@ int main(void)
 
 	/* Initialize sensor manager (GPS, environment sensors) */
 	sensor_manager_init();
+
+	/* Restore wall-clock time from a battery-backed hardware RTC if one is
+	 * present on I2C. Shown tagged "L" (local) until the next GPS/app/CLI
+	 * sync; no-op on boards without an RTC. */
+	{
+		uint32_t rtc_epoch;
+		if (zephcore_rtc_restore(&rtc_epoch)) {
+			rtc_clock.setCurrentTime(rtc_epoch);
+		}
+	}
 
 	/* Initialize UI subsystem (buttons, buzzer, display).
 	 * If display is present, ui_init() handles display init + auto-off.

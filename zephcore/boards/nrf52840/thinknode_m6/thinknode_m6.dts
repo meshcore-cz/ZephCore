@@ -241,6 +241,9 @@
 
 	/* All supported environment & power sensors — auto-detected at runtime */
 	#include "../../common/sensors-i2c.dtsi"
+	/* ThinkNode M6 has an onboard PCF8563 RTC — opt in to boot-time time
+	 * restore (auto-detected at runtime among the supported chips). */
+	#include "../../common/rtc-i2c.dtsi"
 };
 
 /* SPI1 for SX1262 LoRa */

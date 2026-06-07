@@ -287,6 +287,9 @@
 
 	/* All supported environment & power sensors — auto-detected at runtime */
 	#include "../../common/sensors-i2c.dtsi"
+	/* ThinkNode M1 has a battery-backed hardware RTC — opt in to boot-time
+	 * time restore (auto-detected at runtime among the supported chips). */
+	#include "../../common/rtc-i2c.dtsi"
 };
 
 /* ---- SPI2 for LoRa SX1262 ---- */

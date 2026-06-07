@@ -444,6 +444,12 @@ target_sources(app PRIVATE
   helpers/fatal_reboot.c
 )
 
+# Boot-time hardware-RTC auto-discovery (compact raw-I2C). Always compiled so
+# the zephcore_rtc_* symbols exist on every board; it self-stubs internally
+# when CONFIG_ZEPHCORE_RTC_AUTODISCOVER is off or no zephcore,rtc-i2c node is
+# present in DT.
+target_sources(app PRIVATE adapters/clock/ZephyrRTCDiscover.c)
+
 # ========== Battery Curve Selection ==========
 # helpers/battery_curve.c is always compiled — it provides battery_curve_lookup()
 # and the weak battery_curve_default. A board-specific battery_curve.c is compiled

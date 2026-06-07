@@ -51,6 +51,7 @@ extern "C" void bt_ctlr_assert_handle(char *file, uint32_t line)
 #include <app/RepeaterDataStore.h>
 #include <app/RepeaterMesh.h>
 #include <adapters/clock/ZephyrRTCClock.h>
+#include <adapters/clock/ZephyrRTCDiscover.h>
 #include <ZephyrSensorManager.h>
 
 /* UI subsystem (display, buttons, buzzer) */
@@ -271,6 +272,7 @@ static void gps_fix_callback(double lat, double lon, int64_t utc_time)
 	if (utc_time > 0) {
 		LOG_INF("GPS fix: RTC sync time=%lld", utc_time);
 		rtc_clock.setCurrentTime((uint32_t)utc_time);
+		zephcore_rtc_save((uint32_t)utc_time);  /* persist to hardware RTC */
 	}
 
 	int lat_deg = (int)lat;
@@ -430,6 +432,15 @@ int main(void)
 
 	/* Initialize sensor manager */
 	sensor_manager_init();
+
+	/* Restore wall-clock time from a battery-backed hardware RTC if present
+	 * (shown tagged "L" until the next GPS/CLI sync; no-op if no RTC). */
+	{
+		uint32_t rtc_epoch;
+		if (zephcore_rtc_restore(&rtc_epoch)) {
+			rtc_clock.setCurrentTime(rtc_epoch);
+		}
+	}
 
 	/* Set GPS to repeater mode: power off now, wake every 48h for time sync only.
 	 * This prevents GPS from draining power on boards that have it (e.g., Wio Tracker). */

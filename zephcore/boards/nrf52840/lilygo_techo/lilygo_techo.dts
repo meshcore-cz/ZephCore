@@ -299,6 +299,9 @@
 	 * devices that aren't populated. T-Echo factory sensor is BME280 at
 	 * the alt address 0x77, added separately below. */
 	#include "../../common/sensors-i2c.dtsi"
+	/* T-Echo has an onboard PCF8563 RTC — opt in to boot-time time restore
+	 * (auto-detected at runtime among the supported chips). */
+	#include "../../common/rtc-i2c.dtsi"
 };
 
 /* T-Echo BME280 sits at I2C 0x77 (alt address), conflicting with the
