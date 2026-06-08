@@ -90,7 +90,8 @@ static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(LED1_NODE, gpios);
 #define MESH_EVENT_TX_DRAIN      BIT(5)  /* Outbound packet delay expired, run checkSend */
 #define MESH_EVENT_PUSH_TICK     BIT(6)  /* Room server: drive the post-sync push engine */
 #define MESH_EVENT_RTC_SAVE      BIT(7)  /* Hardware-RTC write requested off-main */
-#define MESH_EVENT_ALL           (MESH_EVENT_LORA_RX | MESH_EVENT_LORA_TX_DONE | MESH_EVENT_CLI_RX | MESH_EVENT_HOUSEKEEPING | MESH_EVENT_GPS_ACTION | MESH_EVENT_TX_DRAIN | MESH_EVENT_PUSH_TICK | MESH_EVENT_RTC_SAVE)
+#define MESH_EVENT_INIT_ADVERT   BIT(8)  /* Deferred boot advert — send on main thread */
+#define MESH_EVENT_ALL           (MESH_EVENT_LORA_RX | MESH_EVENT_LORA_TX_DONE | MESH_EVENT_CLI_RX | MESH_EVENT_HOUSEKEEPING | MESH_EVENT_GPS_ACTION | MESH_EVENT_TX_DRAIN | MESH_EVENT_PUSH_TICK | MESH_EVENT_RTC_SAVE | MESH_EVENT_INIT_ADVERT)
 
 /* Housekeeping interval - infrequent to preserve power savings */
 #define HOUSEKEEPING_INTERVAL_MS CONFIG_ZEPHCORE_HOUSEKEEPING_INTERVAL_MS
@@ -284,16 +285,14 @@ static void tx_drain_work_fn(struct k_work *work)
 	k_event_post(&mesh_events, MESH_EVENT_TX_DRAIN);
 }
 
-/* Deferred initial advertisement — gives GPS time to get a fix at boot */
+/* Deferred initial advertisement — gives GPS time to get a fix at boot.
+ * Runs on sysworkq (the 10 s delay timer), so it must NOT send the advert
+ * here: sendSelfAdvertisement() mutates the packet pool / dispatcher shared
+ * with loop().  Post an event and let the main thread send it. */
 static void initial_advert_work_fn(struct k_work *work)
 {
 	ARG_UNUSED(work);
-#ifdef ZEPHCORE_LORA
-	if (room_mesh_ptr) {
-		LOG_INF("Sending deferred initial advertisement");
-		room_mesh_ptr->sendSelfAdvertisement(500, false);
-	}
-#endif
+	k_event_post(&mesh_events, MESH_EVENT_INIT_ADVERT);
 }
 
 static void tx_queued_callback(uint32_t delay_ms, void *user_data)
@@ -407,6 +406,13 @@ static void room_event_loop(void)
 		 * mutation on the main thread (see cli_cmd_queue). */
 		if (events & MESH_EVENT_CLI_RX) {
 			process_cli_commands();
+		}
+
+		/* Deferred boot advert — sent on the main thread (see
+		 * initial_advert_work_fn); loop() below drains the queued packet. */
+		if (room_mesh_ptr && (events & MESH_EVENT_INIT_ADVERT)) {
+			LOG_INF("Sending deferred initial advertisement");
+			room_mesh_ptr->sendSelfAdvertisement(500, false);
 		}
 
 		/* Packet processing — only on radio/CLI/TX events */

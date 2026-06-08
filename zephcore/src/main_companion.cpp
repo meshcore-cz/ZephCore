@@ -90,6 +90,7 @@ extern "C" void bt_ctlr_assert_handle(char *file, uint32_t line)
 #define MESH_EVENT_TX_DRAIN      BIT(6)  /* Outbound packet delay expired, run checkSend */
 #define MESH_EVENT_PREFS_DIRTY   BIT(8)  /* Prefs mutated off-main; main flushes to flash */
 #define MESH_EVENT_RTC_SAVE      BIT(9)  /* Hardware-RTC write requested off-main */
+#define MESH_EVENT_CONTACT_ITER  BIT(10) /* Continue contact-dump iteration on main thread */
 
 #ifdef ZEPHCORE_LORA
 /* Forward decl — data_store + companion_mesh_ptr statics are defined further
@@ -108,7 +109,7 @@ static atomic_t pending_rtc_epoch = ATOMIC_INIT(0);
 #define MESH_EVENT_BASE          (MESH_EVENT_LORA_RX | MESH_EVENT_LORA_TX_DONE | \
 	MESH_EVENT_BLE_RX | MESH_EVENT_HOUSEKEEPING | MESH_EVENT_UI_ACTION |  \
 	MESH_EVENT_GPS_ACTION | MESH_EVENT_TX_DRAIN | MESH_EVENT_PREFS_DIRTY | \
-	MESH_EVENT_RTC_SAVE)
+	MESH_EVENT_RTC_SAVE | MESH_EVENT_CONTACT_ITER)
 #if IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK)
 #define MESH_EVENT_JOYSTICK_LOOP BIT(7)  /* Joystick UI loop tick (50 ms) */
 #define MESH_EVENT_ALL           (MESH_EVENT_BASE | MESH_EVENT_JOYSTICK_LOOP)
@@ -134,7 +135,7 @@ static void request_rtc_save(uint32_t epoch)
 
 /* Work items for event-driven processing */
 static void process_companion_rx(void);   /* runs on MAIN thread (see ble_on_rx_frame) */
-static void contact_iter_work_fn(struct k_work *work);
+static void run_contact_iteration(void);  /* runs on MAIN thread (see MESH_EVENT_CONTACT_ITER) */
 static void housekeeping_timer_fn(struct k_timer *timer);
 #if ZEPHCORE_USB_STACK
 static void companion_cli_run(const char *line);  /* main-thread text-CLI exec */
@@ -154,8 +155,6 @@ static void joystick_signal_tx(void)
 }
 #endif
 
-K_WORK_DEFINE(contact_iter_work, contact_iter_work_fn);
-
 #if ZEPHCORE_USB_STACK
 /* Completed USB text-CLI lines are run on the MAIN thread (the USB adapter
  * assembles them on sysworkq).  CommonCLI::handleCommand mutates mesh state
@@ -169,10 +168,12 @@ K_MSGQ_DEFINE(companion_cli_queue, sizeof(struct companion_cli_line), 4, 4);
 #if ZEPHCORE_USB_STACK
 /* USB TX-drained callback (mirrors BLE on_tx_idle): the TX ring emptied, so
  * resume the contact pump to queue the next batch. Runs in the CDC TX
- * interrupt-callback context — k_work_submit is safe there. */
+ * interrupt-callback context — k_event_post is ISR-safe.  The contact dump
+ * reads the contact table, which the main thread can mutate (addContact on
+ * inbound advert), so it MUST run on the main thread, not here. */
 static void usb_on_tx_drain(void)
 {
-	k_work_submit(&contact_iter_work);
+	k_event_post(&mesh_events, MESH_EVENT_CONTACT_ITER);
 }
 #endif
 
@@ -218,10 +219,11 @@ static void ble_on_rx_frame(const uint8_t *data, uint16_t len)
 }
 
 /* BLE TX idle callback — called when TX queue is empty.
- * Continues contact iteration. */
+ * Continues contact iteration on the MAIN thread (the dump reads the contact
+ * table, which the main thread can mutate — so it can't run on sysworkq). */
 static void ble_on_tx_idle(void)
 {
-	k_work_submit(&contact_iter_work);
+	k_event_post(&mesh_events, MESH_EVENT_CONTACT_ITER);
 	k_event_post(&mesh_events, MESH_EVENT_TX_DRAIN);
 }
 
@@ -390,10 +392,12 @@ static void process_companion_rx(void)
 #endif
 }
 
-/* Contact iteration work - runs when TX queue has space */
-static void contact_iter_work_fn(struct k_work *work)
+/* Continue the contact-dump iteration when TX has space.  Runs on the MAIN
+ * thread (driven by MESH_EVENT_CONTACT_ITER, posted from the BLE/USB tx-idle
+ * callbacks) so reading the contact table never races a main-thread
+ * addContact() from an inbound advert. */
+static void run_contact_iteration(void)
 {
-	ARG_UNUSED(work);
 #ifdef ZEPHCORE_LORA
 	if (!companion_mesh_ptr) {
 		return;
@@ -482,6 +486,12 @@ static void mesh_event_loop(void)
 				companion_cli_run(c.buf);
 			}
 #endif
+		}
+
+		/* Continue contact-dump iteration on the main thread (see
+		 * run_contact_iteration / MESH_EVENT_CONTACT_ITER). */
+		if (events & MESH_EVENT_CONTACT_ITER) {
+			run_contact_iteration();
 		}
 
 		/* Packet processing — only on radio/BLE/TX events */
@@ -1176,7 +1186,8 @@ int main(void)
 	 *
 	 * Other processing still uses work queues:
 	 *   - BLE TX: write_frame -> tx_drain_work (event-driven via notify callback)
-	 *   - Contact iteration: contact_iter_work (on TX queue space)
+	 *   - Contact iteration: MESH_EVENT_CONTACT_ITER -> run_contact_iteration()
+	 *     on the main thread, paced by the BLE/USB tx-idle callbacks
 	 *
 	 * TX completion is now event-driven: radio polls at 5ms intervals internally
 	 * and fires callback when done. Much better than 100ms main loop polling!
