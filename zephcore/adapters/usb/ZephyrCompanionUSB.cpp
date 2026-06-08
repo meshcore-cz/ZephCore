@@ -2,12 +2,11 @@
  * SPDX-License-Identifier: MIT
  * ZephCore USB CDC Companion Transport
  *
- * V3-framed USB CDC for companion mode. Extracted from main_companion.cpp.
- * Only compiled when CONFIG_LOG is enabled (debug builds).
+ * V3-framed serial transport for companion mode. Usually this binds to
+ * USB CDC-ACM; boards with a USB-UART bridge can opt into a chosen UART.
  *
  * USBD lifecycle + 1200-baud DFU detection + DTR state tracking live in
- * the shared ZephyrUSBCDC module; this file just runs the V3 frame parser
- * on top of the CDC ACM UART and reacts to DTR-drop events from there.
+ * the shared ZephyrUSBCDC module when a CDC ACM UART is used.
  */
 
 #include <zephyr/kernel.h>
@@ -49,7 +48,7 @@ enum usb_rx_state {
 
 #define USB_TEXT_LINE_MAX 128
 
-/* USB CDC state */
+/* Serial transport state */
 static const struct device *usb_dev;
 static uint8_t usb_ring_buf_data[USB_RING_BUF_SIZE];
 static struct ring_buf usb_ring_buf;
@@ -491,16 +490,22 @@ void zephcore_usb_companion_init(struct k_event *mesh_events,
 	s_mesh_events = mesh_events;
 	s_mesh_event_ble_rx = mesh_event_ble_rx;
 
-	/* The cdc_acm_uart DT node may be present without the class driver compiled
-	 * (shared esp32s3_usb_otg.dtsi exposes the node unconditionally; the class is
-	 * only enabled with esp32s3_usb.conf). Gate the device-get on the class too,
-	 * else DEVICE_DT_GET_ONE references an undefined device ordinal on, e.g., a
-	 * debug ESP32-S3 companion (CONFIG_LOG=y) built without esp32s3_usb.conf. */
-#if DT_HAS_COMPAT_STATUS_OKAY(zephyr_cdc_acm_uart) && \
+	/* The cdc_acm_uart DT node may be present without the class driver compiled.
+	 * Gate the device-get on the class too, otherwise DEVICE_DT_GET_ONE can
+	 * reference an undefined device ordinal. UART-bridge boards instead bind
+	 * to zephyr,shell-uart when CONFIG_ZEPHCORE_COMPANION_UART is set. */
+#if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_UART) && DT_HAS_CHOSEN(zephyr_shell_uart)
+	usb_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_shell_uart));
+#elif DT_HAS_COMPAT_STATUS_OKAY(zephyr_cdc_acm_uart) && \
 	(IS_ENABLED(CONFIG_USB_CDC_ACM) || IS_ENABLED(CONFIG_USBD_CDC_ACM_CLASS))
 	usb_dev = DEVICE_DT_GET_ONE(zephyr_cdc_acm_uart);
+#endif
+
+#if (IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_UART) && DT_HAS_CHOSEN(zephyr_shell_uart)) || \
+	(DT_HAS_COMPAT_STATUS_OKAY(zephyr_cdc_acm_uart) && \
+	 (IS_ENABLED(CONFIG_USB_CDC_ACM) || IS_ENABLED(CONFIG_USBD_CDC_ACM_CLASS)))
 	if (device_is_ready(usb_dev)) {
-		LOG_INF("USB CDC device ready: %s", usb_dev->name);
+		LOG_INF("serial companion device ready: %s", usb_dev->name);
 		ring_buf_init(&usb_ring_buf, sizeof(usb_ring_buf_data), usb_ring_buf_data);
 		ring_buf_init(&usb_tx_ring_buf, sizeof(usb_tx_ring_buf_data), usb_tx_ring_buf_data);
 
@@ -509,11 +514,12 @@ void zephcore_usb_companion_init(struct k_event *mesh_events,
 		uart_irq_callback_set(usb_dev, usb_uart_isr);
 		uart_irq_rx_enable(usb_dev);
 
-		/* DTR state changes (including disconnect) reach us via the
-		 * shared usbd_msg_callback — no polling work needed. */
-		zephcore_usbd_set_dtr_cb(on_dtr_change);
+		/* DTR state changes are only available for CDC-ACM transports. */
+		if (!IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_UART)) {
+			zephcore_usbd_set_dtr_cb(on_dtr_change);
+		}
 	} else {
-		LOG_WRN("USB CDC device not ready");
+		LOG_WRN("serial companion device not ready");
 		usb_dev = NULL;
 	}
 #endif

@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/sys/util.h>
 
 #include <zephyr/logging/log.h>
@@ -122,6 +123,7 @@ static atomic_t pending_rtc_epoch = ATOMIC_INIT(0);
 
 /* Event-driven mesh loop - k_event for signaling from ISR/callbacks */
 static struct k_event mesh_events;
+static atomic_t companion_session_ready;
 
 /* Defer a hardware-RTC write to the main thread (see pending_rtc_epoch above
  * for why gps_fix_callback can't do this inline). Coalesces like prefs-dirty:
@@ -210,12 +212,15 @@ static void ble_on_rx_frame(const uint8_t *data, uint16_t len)
 		return;
 	}
 
-	/* Wake the MAIN thread to parse the frame.  handleProtocolFrame()
-	 * mutates the lock-free packet pool / dispatcher that loop() also
-	 * touches, so it MUST run on the main thread — parsing on sysworkq
-	 * races the main loop (the source of the stuck-"Sending…" bug when an
-	 * inbound reply is processed while a send command is parsed). */
-	k_event_post(&mesh_events, MESH_EVENT_BLE_RX);
+	atomic_set(&companion_session_ready, 1);
+
+	/* Hand the frame to sysworkq for V3-protocol parsing.  Main thread
+	 * doesn't need a direct wake here: if handleProtocolFrame ends up
+	 * enqueueing an outbound LoRa packet, notifyTxQueued() schedules
+	 * tx_drain_work which posts MESH_EVENT_TX_DRAIN — that's the only
+	 * signal main needs to drive the dispatcher.  BLE-only commands
+	 * (login, time, app-start, …) are handled entirely on sysworkq. */
+	k_work_submit(&rx_process_work);
 }
 
 /* BLE TX idle callback — called when TX queue is empty.
@@ -230,6 +235,7 @@ static void ble_on_tx_idle(void)
 /* BLE connected callback — notify UI, clear USB state if needed */
 static void ble_on_connected(void)
 {
+	atomic_set(&companion_session_ready, 0);
 	ui_notify(UI_EVENT_BLE_CONNECTED);
 }
 
@@ -241,6 +247,7 @@ static void ble_on_connected(void)
  * Ed25519 sign buffer if a sign op was interrupted (else an 8KB leak). */
 static void companion_session_cleanup(void)
 {
+	atomic_set(&companion_session_ready, 0);
 #ifdef ZEPHCORE_LORA
 	companion_mesh_ptr->cancelContactIterator();
 	companion_mesh_ptr->cancelSyncPending();
@@ -254,6 +261,7 @@ static void companion_session_cleanup(void)
  * lights the indicator for serial transports too). */
 static void usb_on_session_start(void)
 {
+	atomic_set(&companion_session_ready, 1);
 	ui_notify(UI_EVENT_BLE_CONNECTED);
 }
 
@@ -324,14 +332,24 @@ static void push_callback(uint8_t code, const uint8_t *data, size_t len)
 	 * is "connected" too, but zephcore_ble_is_connected() only reports the BLE
 	 * link — without the USB check, pushes (new messages, etc.) are silently
 	 * dropped on a USB-attached client. */
-	bool transport_up = zephcore_ble_is_connected();
+	bool ble_transport_up = zephcore_ble_is_connected();
+	bool transport_up = ble_transport_up;
+	bool usb_binary_transport_up = false;
 #if ZEPHCORE_USB_STACK
 	/* A text-CLI session is not a binary companion — don't push V3 frames to it. */
-	transport_up = transport_up ||
-		(zephcore_ble_get_active_iface() == ZEPHCORE_IFACE_USB &&
-		 !zephcore_usb_companion_is_text_session());
+	usb_binary_transport_up = (zephcore_ble_get_active_iface() == ZEPHCORE_IFACE_USB &&
+				   !zephcore_usb_companion_is_text_session());
+	transport_up = transport_up || usb_binary_transport_up;
 #endif
 	if (!transport_up) return;
+
+	/* Web Bluetooth clients can subscribe before their protocol state machine is
+	 * ready for unsolicited traffic. Drop startup pushes until the app sends its
+	 * first command; command responses still use write_frame() directly. */
+	if (ble_transport_up && !usb_binary_transport_up && !atomic_get(&companion_session_ready)) {
+		LOG_DBG("drop early BLE push code=0x%02x len=%u", code, (unsigned)len);
+		return;
+	}
 
 	/* Push frame: code byte + optional data */
 	uint8_t push_buf[1 + MAX_FRAME_SIZE - 1];

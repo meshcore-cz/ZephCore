@@ -20,6 +20,7 @@
 
 #include <time_sync.h>
 #include <ZephyrSensorManager.h>
+#include <ZephyrBLE.h>
 
 #include <zephyr/kernel.h>
 #include <stdio.h>
@@ -335,18 +336,24 @@ static void render_radio(void)
 
 static void render_bluetooth(void)
 {
+	char code[16];
+
 	if (!state.ble_enabled) {
 		draw_centered(centered_row(0, 2), "BLE: OFF");
 		draw_centered(centered_row(1, 2), "Press to Enable");
 		return;
 	}
 
+	snprintf(code, sizeof(code), "Code: %06u", zephcore_ble_get_passkey());
+
 	if (state.ble_connected) {
-		draw_centered(centered_row(0, 2), "BLE: Connected");
-		draw_centered(centered_row(1, 2), "Press to Disable");
+		draw_centered(centered_row(0, 3), "BLE: Connected");
+		draw_centered(centered_row(1, 3), code);
+		draw_centered(centered_row(2, 3), "Press to Disable");
 	} else {
-		draw_centered(centered_row(0, 2), "BLE: Advertising");
-		draw_centered(centered_row(1, 2), "Press to Disable");
+		draw_centered(centered_row(0, 3), "BLE: Advertising");
+		draw_centered(centered_row(1, 3), code);
+		draw_centered(centered_row(2, 3), "Press to Disable");
 	}
 }
 

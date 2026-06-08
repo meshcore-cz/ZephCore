@@ -106,25 +106,34 @@ config ZEPHCORE_ROLE_ROOM_SERVER
 endchoice
 
 config ZEPHCORE_COMPANION_USB
-	bool "Enable USB CDC companion transport"
-	depends on USB_DEVICE_STACK_NEXT
-	default y if ZEPHCORE_ROLE_COMPANION
+	bool "Enable serial companion transport"
+	depends on ZEPHCORE_ROLE_COMPANION
+	default y if USB_DEVICE_STACK_NEXT
 	help
-	  Compile and init the USB CDC-ACM companion protocol stack
-	  (ZephyrCompanionUSB / ZephyrUSBCDC) independently of CONFIG_LOG.
-	  The full ~60-opcode binary protocol is available over USB even in
-	  production builds (CONFIG_LOG=n).  USB and BLE arbitrate the active
-	  interface first-come-first-served: CMD_APP_START claims it for USB only
-	  if no BLE session is already active (and is ignored while BLE is live);
-	  on USB unplug the interface is handed back to BLE or released to idle.
+	  Compile and init the serial companion protocol stack independently
+	  of CONFIG_LOG.  The binary protocol is available over CDC-ACM or,
+	  on boards that set ZEPHCORE_COMPANION_UART, over a chosen UART.
+	  Serial and BLE arbitrate the active interface first-come-first-served:
+	  the first inbound serial frame claims it only if no BLE session is
+	  already active.
 
 	  Enabled by default for all companion builds on platforms that already
 	  have CONFIG_USB_DEVICE_STACK_NEXT=y (all nRF52840 boards).  On
 	  platforms without USB hardware (MG24, ESP32 classic, C3/C6) the
-	  depends forces this to n automatically — no conf change needed.
+	  default remains n unless a board explicitly enables it.
 
 	  For ESP32-S3 boards, USB_DEVICE_STACK_NEXT must be enabled first via
-	  boards/common/esp32s3_usb.conf before this becomes active.
+	  boards/common/esp32s3_usb.conf before CDC-ACM becomes active.
+
+config ZEPHCORE_COMPANION_UART
+	bool "Use chosen UART for companion serial transport"
+	depends on ZEPHCORE_COMPANION_USB && SERIAL
+	default n
+	help
+	  Bind the companion serial protocol to zephyr,shell-uart instead of a
+	  CDC-ACM UART.  This is for boards like Heltec V3 where the external
+	  USB connector exposes a CP2102 USB-UART bridge wired to UART0 rather
+	  than ESP32-S3 native USB OTG.
 
 if ZEPHCORE_ROLE_REPEATER || ZEPHCORE_ROLE_ROOM_SERVER
 

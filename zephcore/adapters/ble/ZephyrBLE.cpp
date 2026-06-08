@@ -3,10 +3,11 @@
  * ZephCore BLE Adapter — NUS service, advertising, security, TX/RX
  *
  * Security: SMP pairing with SC + MITM + Bonding, DisplayOnly IO (app_passkey).
- * Pairing is triggered reactively by ATT_ERR_AUTHENTICATION on secured GATT
- * attributes (Apple §55 compliant — no proactive Security Request on connect).
+ * Pairing uses the configured fixed passkey. We request authenticated security
+ * on connect so Web Bluetooth clients complete pairing before subscribing to
+ * the secured NUS characteristics.
  *
- * Advertising: ESP32 enables CONFIG_BT_PRIVACY in esp32_common.conf; nRF uses public identity.
+ * Advertising: public identity, matching Arduino MeshCore and Android app expectations.
  * Android Flutter may fail connect-from-app to RPA unless bonded; Arduino MeshCore uses public.
  */
 
@@ -466,7 +467,7 @@ BT_GATT_SERVICE_DEFINE(secure_nus_svc,
 		BT_GATT_PERM_NONE,
 		NULL, NULL, NULL),
 	BT_GATT_CCC(secure_nus_ccc_changed,
-		BT_GATT_PERM_READ_AUTHEN | BT_GATT_PERM_WRITE_AUTHEN),
+		BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 	BT_GATT_CHARACTERISTIC(BT_UUID_NUS_RX_CHAR,
 		BT_GATT_CHRC_WRITE | BT_GATT_CHRC_WRITE_WITHOUT_RESP,
 		BT_GATT_PERM_WRITE_AUTHEN,
@@ -706,6 +707,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	}
 
 	current_conn = bt_conn_ref(conn);
+	ble_claim_iface_if_idle();
 
 	/* Zephyr stops advertising internally when the conn slot is consumed
 	 * (BT_MAX_CONN=1 — there's no slot left to advertise from).  Sync our
@@ -722,15 +724,24 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	 * with a fallback in security_changed() if PHY update never fires. */
 	dle_requested = false;
 
-	/* Do NOT proactively request security here.
-	 *
-	 * Apple Accessory Design Guidelines §55 (Pairing): the accessory should
-	 * not request pairing until an ATT request is rejected with "Insufficient
-	 * Authentication."  Pairing is triggered reactively when the phone tries
-	 * to access our AUTHEN-secured GATT attributes (CCC write / RX write).
-	 *
-	 * For bonded reconnects, Zephyr auto-encrypts with stored keys when
-	 * CONFIG_BT_SMP and CONFIG_BT_BONDABLE are enabled. */
+	if (bt_conn_get_security(conn) >= BT_SECURITY_L3 && !ble_tx_ready) {
+		LOG_INF("connected with authenticated link, enabling TX");
+		ble_tx_ready = true;
+	}
+
+	/* Request fixed-PIN/MITM security immediately. Mac Web Bluetooth can
+	 * otherwise complete discovery, hit the AUTHEN-secured CCCD, perform
+	 * passkey pairing, then lose the link while retrying that same CCCD write.
+	 * Starting security here makes the first subscribe/write happen on the
+	 * already-authenticated link. */
+	if (bt_conn_get_security(conn) < BT_SECURITY_L3) {
+		int sec_err = bt_conn_set_security(conn, BT_SECURITY_L3);
+		if (sec_err) {
+			LOG_WRN("security request failed: %d", sec_err);
+		} else {
+			LOG_INF("requested authenticated BLE security");
+		}
+	}
 
 	/* Notify main of BLE connection */
 	if (ble_cbs && ble_cbs->on_connected) {
@@ -804,7 +815,7 @@ static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_
 	 * the authority.  CCC subscription (secure_nus_ccc_changed) only kicks
 	 * the TX drain; it never sets ble_tx_ready.
 	 */
-	if (level >= BT_SECURITY_L2 && !ble_tx_ready) {
+	if (level >= BT_SECURITY_L3 && !ble_tx_ready) {
 		LOG_INF("security established, enabling TX");
 		ble_tx_ready = true;
 		ble_claim_iface_if_idle();
@@ -923,13 +934,15 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 
 static uint32_t auth_app_passkey(struct bt_conn *conn)
 {
+	ARG_UNUSED(conn);
+	LOG_INF("pairing passkey requested: %06u", ble_passkey);
 	return ble_passkey;
 }
 
 static void auth_passkey_display(struct bt_conn *conn, unsigned int passkey)
 {
 	ARG_UNUSED(conn);
-	ARG_UNUSED(passkey);
+	LOG_INF("display pairing passkey: %06u", passkey);
 }
 
 static void auth_cancel(struct bt_conn *conn)
@@ -1193,6 +1206,7 @@ static ssize_t secure_nus_rx_write(struct bt_conn *conn, const struct bt_gatt_at
 	uint8_t cmd = data[0];
 
 	LOG_DBG("NUS RX: len=%u cmd=0x%02x", len, cmd);
+	ble_claim_iface_if_idle();
 
 	/* Notify main via callback */
 	if (ble_cbs && ble_cbs->on_rx_frame) {

@@ -11,6 +11,7 @@ build-*/
 /.west/
 
 # Zephyr SDK and toolchain (large, downloaded separately)
+/.toolchains/
 /bootloader/
 /modules/
 /tools/
@@ -73,6 +74,7 @@ CMakeFiles/
 .ninja_*
 cmake_install.cmake
 Makefile
+!Makefile
 compile_commands.json
 
 # Memory dumps
